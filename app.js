@@ -19,7 +19,11 @@ addEventListener('error', e => { try { S.lastError = String(e.message || e); con
 addEventListener('unhandledrejection', e => { try { S.lastError = 'promise: ' + String(e.reason && e.reason.message || e.reason); } catch (_) {} });
 
 // ---------- renderer ----------
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false, powerPreference: 'high-performance' });
+// a do-nothing stand-in if WebGL cannot start at all (the 2D safety renderer then draws everything)
+function nullRenderer() { const f = new Proxy(function () {}, { get: (t, k) => (k === Symbol.toPrimitive ? () => 0 : f), apply: () => f, set: () => true }); return f; }
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false, powerPreference: 'high-performance' }); }
+catch (e) { renderer = nullRenderer(); S.noGL = String(e && e.message || e); }
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.autoClear = false;
 renderer.setClearColor(0x1e1530, 1);
@@ -92,11 +96,11 @@ const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 40.0 }, uFogFar
   uLightDir: { value: new THREE.Vector3(-0.35, 0.65, 0.7).normalize() }, uLightCol: { value: new THREE.Vector3(1, 0.97, 0.93) }, uLightI: { value: 1.0 }, uTime: { value: 0 } };
 const crystalMat = new THREE.ShaderMaterial({
   uniforms: crystalUniforms, transparent: true, depthWrite: false, depthTest: true,
-  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendEquation: THREE.AddEquation,   // premultiplied: crisp over the camera
+  blending: THREE.NormalBlending, premultipliedAlpha: false,   // plain source-over: opaque-looking gems that read on bright walls too (no additive veil)
   vertexShader: /* glsl */`
 attribute vec4 aSeed; attribute float aBig;
 uniform float uDpr, uFogNear, uFogFar; uniform vec2 uView; uniform vec3 uLightDir, uLightCol; uniform float uLightI; uniform float uTime;
-varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail;
+varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail; varying float vPx;
 vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
 void main(){
   // Gem positions never move. Only the light response changes with the viewing angle (uView).
@@ -124,64 +128,66 @@ void main(){
   vec3 prism = clamp(rainbow(hue) * 1.35 - 0.12, 0.0, 1.0);   // vivid spectral flash
   vec3 hi = mix(prism, prism * uLightCol * 1.15, 0.45);       // warm room light tints the highlights warmer
   vCol = mix(pastel * 0.85 + prism * 0.15, hi * 1.6 + 0.35 * uLightCol, glint);
-  float css = 3.4 * pow(2.0 / max(dist, 1.0), 0.85) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.9);   // true perspective shrink   // ~2 px up close, sub-pixel far; glints swell slightly
-  float px = css * uDpr;
-  gl_PointSize = max(px, 1.0);
-  gl_Position = projectionMatrix * mv;
-  float sub = clamp(css * 1.25, 0.0, 1.0);   // sub-CSS-pixel gems dim instead of staying a full device pixel (DPR-independent falloff)
-  // exponential falloff into the dark: ~100% near, ~50% by mid-depth, ~0 at the far end (no fog colour)
-  float fog = exp(-max(dist - 5.0, 0.0) * 0.024) * (1.0 - smoothstep(uFogFar * 0.5, uFogFar, dist));   // ~50% at 34 units (17 ft), ~20% at 70, ~0 at the end
-  vAlpha = fog * sub * smoothstep(0.5, 1.2, dist) * (0.7 + 0.25 * aSeed.y + glint * 1.4);
-  if (vAlpha < 0.07) { gl_PointSize = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // too faint: draw nothing at all (no milky dust)
-  vGlint = glint; vH = H; vV = V; vSeed4 = aSeed; vScale = 1.0 + glint * 1.9; vLc = uLightCol * (0.6 + 0.4 * uLightI);
-  vDetail = smoothstep(5.0, 12.0, px);   // facets only where the sprite has enough device pixels to show them
+  // visible sizes (CSS px): ~8-11 near, ~3.5 at mid-depth, ~1.5-2 far, then gone. Every 10th gem 50% bigger.
+  float css = min(11.0, 8.0 * pow(6.0 / max(dist, 1.0), 0.52)) * (1.0 + 0.5 * aBig);
+  float body = css * uDpr;                       // gem body in device px
+  float scl = 1.0 + glint * 0.6;                 // sprite grows on a glint to make room for the star rays
+  float px = body * scl;
+  // strong exponential falloff to the vanishing point (alpha only, never toward a colour)
+  float fog = exp(-max(dist - 6.0, 0.0) * 0.022) * (1.0 - smoothstep(uFogFar * 0.55, uFogFar, dist));
+  vAlpha = fog * smoothstep(0.8, 1.6, dist);
+  if (vAlpha < 0.06 || body < 1.0) { gl_PointSize = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  gl_PointSize = px;
+  vGlint = glint; vH = H; vV = V; vSeed4 = aSeed; vScale = scl; vLc = uLightCol * (0.6 + 0.4 * uLightI);
+  vDetail = smoothstep(9.0, 22.0, body);         // full facet detail when the gem is big enough to show it
+  vPx = body;
   gl_Position = projectionMatrix * mv;
 }`,
   fragmentShader: /* glsl */`
 precision highp float;
-varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail;
+varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail; varying float vPx;
 vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
 void main(){
   vec2 raw = gl_PointCoord - 0.5;
-  vec2 q = raw * vScale;                                      // gem body; sprite grows only to fit the star glint
+  vec2 q = raw * vScale;                                     // gem body occupies the inner part when the sprite grows for a glint
   float rot = vSeed4.x * 6.2831853;
   q = mat2(cos(rot), -sin(rot), sin(rot), cos(rot)) * q;
-  // brilliant-cut outline: regular octagon, 8 crown facets around a flat table
+  // brilliant-cut outline: octagon with 8 crown facets around a flat table
   float oct = max(max(abs(q.x), abs(q.y)), (abs(q.x) + abs(q.y)) * 0.7071);
-  float inside = step(oct, mix(0.62, 0.46, vDetail));   // tiny sprites: keep the whole pixel footprint
+  const float R = 0.44;
+  float inside = step(oct, R);
+  float rim = clamp(1.15 / max(vPx, 1.0), 0.07, 0.22);      // ~1 device px dark outline, so gems read on light walls
+  float outline = inside * step(R - rim, oct);
   float ang = atan(q.y, q.x);
-  float k = floor((ang + 3.14159265) / 0.78539816);            // facet index 0..7
+  float k = floor((ang + 3.14159265) / 0.78539816);
   float ac = (k + 0.5) * 0.78539816 - 3.14159265;
-  float isTable = step(oct, 0.20);
+  float isTable = step(oct, 0.19);
   float slope = mix(0.85, 0.0, isTable);
-  vec3 N = normalize(vec3(cos(ac + rot) * slope, -sin(ac + rot) * slope * -1.0, 1.0));
+  vec3 N = normalize(vec3(cos(ac + rot) * slope, sin(ac + rot) * slope, 1.0));
   vec3 H = normalize(vH), V = normalize(vV);
-  float spec = pow(max(dot(N, H), 0.0), 60.0);
-  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-  // prismatic dispersion: each facet throws a different spectral color as tilt changes
-  vec3 disp = clamp(rainbow(vSeed4.z + k * 0.137 + dot(N, V) * 5.0 + dot(V.xy, vec2(3.1, 2.3))) * 1.35 - 0.1, 0.0, 1.0);
-  float facetShade = 0.55 + 0.45 * fract(sin(k * 12.9898 + vSeed4.y * 78.233) * 43758.5453);   // crisp per-facet contrast
-  // thin dark facet edges (crisp, not blurred)
-  float edge = 1.0 - step(0.035, abs(fract((ang + 3.14159265) / 0.78539816 + 0.5) - 0.5)) * (1.0 - isTable);
-  float girdle = step(0.43, oct);
-  vec3 body = vCol * (0.35 + 0.35 * facetShade);              // clear, lightly tinted body
-  vec3 col = body + disp * (spec * 1.8 + fres * 0.35 + vGlint * 0.6) * vLc + vec3(1.0) * spec * 0.9;
-  float tableRing = (1.0 - step(0.02, abs(oct - 0.20)));
-  col *= 1.0 - 0.45 * clamp(edge * (1.0 - isTable) + tableRing + girdle * 0.6, 0.0, 1.0);
-  float a = inside * (0.38 + 0.25 * facetShade + spec * 0.6 + vGlint * 0.4);
-  // pinpoint gems (a few device px): a crisp bright spectral point instead of sub-pixel facet detail
-  vec3 pin = vCol * 1.05 + disp * vGlint * 0.8 * vLc;
-  col = mix(pin, col, vDetail);
-  a = mix(inside * (0.85 + vGlint * 0.15), a, vDetail);
-  // star-glint sparkle on hits: crisp 4 + 4 point rays
-  float s4 = (1.0 - step(0.035, abs(raw.x))) + (1.0 - step(0.035, abs(raw.y)));
-  float s8 = (1.0 - step(0.025, abs(raw.x - raw.y))) + (1.0 - step(0.025, abs(raw.x + raw.y)));
-  float star = smoothstep(0.35, 0.9, vGlint) * clamp(s4 + s8 * 0.5, 0.0, 1.0) * (1.0 - step(0.5, length(raw)));
-  col += vec3(1.0, 0.98, 0.94) * star * 1.4;
-  a = max(a, star);
-  a = clamp(a * vAlpha, 0.0, 1.0);
-  if (a < 0.03) discard;
-  gl_FragColor = vec4(col * vAlpha * max(inside, star), a);
+  float spec = pow(max(dot(N, H), 0.0), 40.0);
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 2.0);
+  vec3 disp = clamp(rainbow(vSeed4.z + k * 0.137 + dot(N, V) * 5.0 + dot(V.xy, vec2(3.1, 2.3))) * 1.4 - 0.12, 0.0, 1.0);
+  float facetShade = 0.5 + 0.5 * fract(sin(k * 12.9898 + vSeed4.y * 78.233) * 43758.5453);
+  // body: bright pastel crystal with rainbow facets; small gems get one bright spectral face
+  vec3 facetCol = mix(vCol, disp, 0.55) * (0.55 + 0.55 * facetShade);
+  vec3 col = facetCol + disp * (spec * 1.4 + fres * 0.45 + vGlint * 0.7) * vLc + vec3(spec * 0.9);
+  float lines = (1.0 - step(0.045, abs(fract((ang + 3.14159265) / 0.78539816 + 0.5) - 0.5))) * (1.0 - isTable) + (1.0 - step(0.025, abs(oct - 0.19)));
+  col *= 1.0 - 0.35 * clamp(lines, 0.0, 1.0) * vDetail;     // crisp facet lines only where there is room
+  vec3 small = mix(vCol, disp, 0.5) * 1.1 + vec3(vGlint * 0.5);
+  col = mix(small, col, vDetail);
+  col = mix(col, vec3(0.06, 0.04, 0.09), outline * 0.9);    // thin dark edge
+  float a = inside;
+  // star-glint sparkle (crisp 4 + 4 rays) on hits
+  float w = 0.6 / max(vPx * vScale, 1.0);
+  float s4 = (1.0 - step(w, abs(raw.x))) + (1.0 - step(w, abs(raw.y)));
+  float s8 = (1.0 - step(w * 0.8, abs(raw.x - raw.y))) + (1.0 - step(w * 0.8, abs(raw.x + raw.y)));
+  float star = smoothstep(0.35, 0.85, vGlint) * clamp(s4 + s8 * 0.6, 0.0, 1.0) * (1.0 - step(0.5, length(raw))) * (1.0 - inside);
+  col = mix(col, vec3(1.0, 0.98, 0.94), star);
+  a = max(a, star * 0.95);
+  a *= vAlpha;
+  if (a < 0.04) discard;
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0), a);
 }`,
 });
 let crystals = null;
@@ -356,6 +362,7 @@ function updateView(t, dt) {
   viewS.x += (tx - viewS.x) * k; viewS.y += (ty - viewS.y) * k;
   crystalUniforms.uView.value.copy(viewS);
   // true 3D parallax: offset the scene camera and keep it aimed at a mid-depth point
+  if (!Number.isFinite(viewS.x) || !Number.isFinite(viewS.y)) viewS.set(0, 0);   // never let a bad orientation sample break the view
   cam3.position.set(viewS.x * 1.6, viewS.y * 1.6, CAMZ);
   cam3.lookAt(0, 0, CAMZ - 22);
   bgUniforms.uPar.value.set(-viewS.x * 0.22, -viewS.y * 0.22);
@@ -419,13 +426,80 @@ function frame() {
   crystalUniforms.uTime.value = t;
   updateDemon(t, dt);
   updateView(t, dt);
-  renderer.clear();
-  renderer.render(bgScene, bgCam);
-  renderer.render(dScene, hudCam);
-  renderer.clearDepth();
-  renderer.render(scene, cam3);
-  renderer.render(hud, hudCam);
+  if (S.gemRenderer !== '2d-full') {
+    try { renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(dScene, hudCam); renderer.clearDepth(); }
+    catch (e) { useFallback('2d-full', e); }
+    if (S.gemRenderer === 'webgl') { try { renderer.render(scene, cam3); } catch (e) { useFallback('2d-gems', e); } }
+    if (S.gemRenderer !== '2d-full') { try { renderer.render(hud, hudCam); } catch (e) {} }
+  }
+  if (S.gemRenderer !== 'webgl') { try { draw2d(); } catch (e) { S.lastError = 'draw2d: ' + e; } }
 }
+
+// ---------- safety net: 2D canvas gem renderer ----------
+// Used if the WebGL gem pass throws / its shader fails to compile ('2d-gems': camera stays WebGL, gems drawn in 2D on top),
+// or WebGL is unavailable / the context is lost ('2d-full': camera, gems and demon all drawn with a 2D canvas).
+const g2 = document.createElement('canvas'); g2.id = 'gems2d';
+g2.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;pointer-events:none;z-index:0;display:none';
+canvas.after(g2);
+const g2c = g2.getContext('2d');
+S.gemRenderer = 'webgl';
+let gems2d = null;
+function useFallback(mode, why) {
+  if (S.gemRenderer === mode || (S.gemRenderer === '2d-full' && mode === '2d-gems')) return;
+  S.gemRenderer = mode; S.fallbackWhy = String(why && why.message || why);
+  g2.style.display = 'block';
+  canvas.style.visibility = mode === '2d-full' ? 'hidden' : 'visible';
+  if (crystals) crystals.visible = false;
+}
+function build2dGems() {
+  const g = crystals.geometry, P = g.attributes.position.array, Sd = g.attributes.aSeed.array, B = g.attributes.aBig.array, out = [];
+  for (let i = 0; i < P.length / 3; i++) if (CAMZ - P[i * 3 + 2] < DEPTH * 0.75) out.push([P[i * 3], P[i * 3 + 1], P[i * 3 + 2], B[i], Sd[i * 4], Sd[i * 4 + 2]]);
+  gems2d = out;
+}
+const _v = new THREE.Vector3();
+function draw2d() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3), W = Math.round(S.W * dpr), H = Math.round(S.H * dpr);
+  if (g2.width !== W || g2.height !== H) { g2.width = W; g2.height = H; }
+  const c = g2c; c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, W, H);
+  if (S.gemRenderer === '2d-full') {
+    c.fillStyle = '#000'; c.fillRect(0, 0, W, H);
+    if (video.videoWidth) {   // camera, cover-fit, mirrored for the front camera
+      const vw = video.videoWidth, vh = video.videoHeight, s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+      c.save(); if (S.mirror) { c.translate(W, 0); c.scale(-1, 1); } c.drawImage(video, (W - dw) / 2, (H - dh) / 2, dw, dh); c.restore();
+    }
+  }
+  if (!gems2d && crystals) build2dGems();
+  if (gems2d) {
+    cam3.updateMatrixWorld();
+    for (const [x, y, z, big, sa, sh] of gems2d) {
+      _v.set(x, y, z); const dist = cam3.position.distanceTo(_v); _v.project(cam3);
+      if (_v.z > 1 || Math.abs(_v.x) > 1.05 || Math.abs(_v.y) > 1.05) continue;
+      const css = Math.min(11, 8 * Math.pow(6 / Math.max(dist, 1), 0.52)) * (1 + 0.5 * big);
+      const al = Math.exp(-Math.max(dist - 6, 0) * 0.022) * (1 - THREE.MathUtils.smoothstep(dist, DEPTH * 0.55, DEPTH));
+      if (al < 0.06 || css * dpr < 1) continue;
+      const px = (_v.x + 1) / 2 * W, py = (1 - _v.y) / 2 * H, r = css * dpr * 0.44;
+      const hue = ((sh + viewS.x * 0.6 + viewS.y * 0.4) % 1 + 1) % 1 * 360;
+      c.globalAlpha = al; c.beginPath();
+      for (let k = 0; k < 8; k++) { const a = sa * 6.283 + k * 0.7854 + 0.3927; c.lineTo(px + Math.cos(a) * r, py + Math.sin(a) * r); }
+      c.closePath(); c.fillStyle = `hsl(${hue},90%,82%)`; c.fill();
+      c.lineWidth = Math.max(1, dpr * 0.5); c.strokeStyle = 'rgba(16,10,24,0.9)'; c.stroke();
+      const gl = Math.pow(Math.max(0, Math.sin(t * (0.7 + sa) + sh * 91)), 60);
+      if (gl > 0.3) { c.strokeStyle = '#fffaf0'; c.lineWidth = Math.max(1, dpr * 0.6); const L = r * 2.6 * gl;
+        c.beginPath(); c.moveTo(px - L, py); c.lineTo(px + L, py); c.moveTo(px, py - L); c.lineTo(px, py + L); c.stroke(); }
+    }
+    c.globalAlpha = 1;
+  }
+  if (S.gemRenderer === '2d-full' && demonMesh.visible && demonMat.uniforms.map.value && demonMat.uniforms.uOpacity.value > 0) {
+    const im = demonMat.uniforms.map.value.image, p = demonMesh.position, sc = demonMesh.scale;
+    c.save(); c.globalAlpha = demonMat.uniforms.uOpacity.value; c.translate(p.x * dpr, H - p.y * dpr); c.rotate(-demonMesh.rotation.z);
+    c.drawImage(im, -sc.x * dpr / 2, -sc.y * dpr / 2, sc.x * dpr, sc.y * dpr); c.restore();
+  }
+}
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); useFallback('2d-full', 'webgl context lost'); });
+canvas.addEventListener('webglcontextrestored', () => { S.gemRenderer = 'webgl'; g2.style.display = 'none'; canvas.style.visibility = 'visible'; if (crystals) crystals.visible = true; });
+try { renderer.debug.onShaderError = (gl, prog, vs, fs) => { S.lastError = 'shader compile failed'; useFallback('2d-gems', 'shader error'); }; } catch (e) {}
+if (S.noGL) useFallback('2d-full', S.noGL);
+if (/[?&]gem2d=(1|full)/.test(location.search)) setTimeout(() => useFallback(/gem2d=full/.test(location.search) ? '2d-full' : '2d-gems', 'forced by URL'), 0);
 
 // ---------- UI ----------
 $('#wmBtn').onclick = () => { S.watermark = !S.watermark; $('#wmBtn').classList.toggle('on', S.watermark); placeWatermark(); };
@@ -523,8 +597,11 @@ $('#shareBtn').onclick = async () => {
 };
 // snapshot the rendered frame immediately (fast copy), encode to PNG afterwards
 const snap = () => new Promise(res => requestAnimationFrame(() => {
-  const c = document.createElement('canvas'); c.width = canvas.width; c.height = canvas.height;
-  c.getContext('2d').drawImage(canvas, 0, 0); res(c);
+  const full = S.gemRenderer === '2d-full', src = full ? g2 : canvas;
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height; const x = c.getContext('2d');
+  x.drawImage(src, 0, 0);
+  if (S.gemRenderer === '2d-gems') x.drawImage(g2, 0, 0, c.width, c.height);   // 2D gems on top of the WebGL camera
+  res(c);
 }));
 const encode = c => new Promise(res => c.toBlob(res, 'image/png'));
 const grab = () => snap().then(encode);
@@ -561,7 +638,7 @@ $('#recBtn').onclick = () => {
   if (S.recording) return stopRec();
   const mime = pickMime();
   if (mime === null || !canvas.captureStream) { setStatus('video recording not supported here — use photo', true); return; }
-  const stream = canvas.captureStream(30);
+  const stream = (S.gemRenderer === '2d-full' ? g2 : canvas).captureStream(30);
   let rec;
   try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 6e6 } : undefined); }
   catch (e) { try { rec = new MediaRecorder(stream); } catch (e2) { setStatus('video recording not supported here', true); return; } }
@@ -611,6 +688,7 @@ const DEMON_LINES = [
 // each demon speaks its own 6 lines (all 20 covered across the 10 demons), pre-rendered in its own voice
 const VOICE = {"1":[{"line":0,"file":"l01.m4a","laugh":2.07,"dur":4.29},{"line":1,"file":"l02.m4a","laugh":2.07,"dur":4.6},{"line":2,"file":"l03.m4a","laugh":2.07,"dur":4.29},{"line":3,"file":"l04.m4a","laugh":2.07,"dur":3.72},{"line":4,"file":"l05.m4a","laugh":2.07,"dur":4.52},{"line":5,"file":"l06.m4a","laugh":2.07,"dur":4.26}],"2":[{"line":2,"file":"l03.m4a","laugh":3.05,"dur":5.66},{"line":3,"file":"l04.m4a","laugh":3.05,"dur":5.28},{"line":4,"file":"l05.m4a","laugh":3.05,"dur":6.25},{"line":5,"file":"l06.m4a","laugh":3.05,"dur":5.8},{"line":6,"file":"l07.m4a","laugh":3.05,"dur":6.22},{"line":7,"file":"l08.m4a","laugh":3.05,"dur":6.98}],"3":[{"line":4,"file":"l05.m4a","laugh":2.63,"dur":6.62},{"line":5,"file":"l06.m4a","laugh":2.63,"dur":6.47},{"line":6,"file":"l07.m4a","laugh":2.63,"dur":7.04},{"line":7,"file":"l08.m4a","laugh":2.63,"dur":7.08},{"line":8,"file":"l09.m4a","laugh":2.63,"dur":6.32},{"line":9,"file":"l10.m4a","laugh":2.63,"dur":6.33}],"4":[{"line":6,"file":"l07.m4a","laugh":1.29,"dur":3.32},{"line":7,"file":"l08.m4a","laugh":1.29,"dur":4.07},{"line":8,"file":"l09.m4a","laugh":1.29,"dur":3.36},{"line":9,"file":"l10.m4a","laugh":1.29,"dur":2.97},{"line":10,"file":"l11.m4a","laugh":1.29,"dur":2.88},{"line":11,"file":"l12.m4a","laugh":1.29,"dur":3.05}],"5":[{"line":8,"file":"l09.m4a","laugh":1.27,"dur":3.37},{"line":9,"file":"l10.m4a","laugh":1.27,"dur":3.01},{"line":10,"file":"l11.m4a","laugh":1.27,"dur":2.77},{"line":11,"file":"l12.m4a","laugh":1.27,"dur":2.99},{"line":12,"file":"l13.m4a","laugh":1.27,"dur":3.25},{"line":13,"file":"l14.m4a","laugh":1.27,"dur":3.16}],"6":[{"line":10,"file":"l11.m4a","laugh":1.44,"dur":3.68},{"line":11,"file":"l12.m4a","laugh":1.44,"dur":3.9},{"line":12,"file":"l13.m4a","laugh":1.44,"dur":4.02},{"line":13,"file":"l14.m4a","laugh":1.44,"dur":4.15},{"line":14,"file":"l15.m4a","laugh":1.44,"dur":3.7},{"line":15,"file":"l16.m4a","laugh":1.44,"dur":4.01}],"7":[{"line":12,"file":"l13.m4a","laugh":1.47,"dur":4.88},{"line":13,"file":"l14.m4a","laugh":1.47,"dur":4.7},{"line":14,"file":"l15.m4a","laugh":1.47,"dur":4.13},{"line":15,"file":"l16.m4a","laugh":1.47,"dur":4.74},{"line":16,"file":"l17.m4a","laugh":1.47,"dur":4.39},{"line":17,"file":"l18.m4a","laugh":1.47,"dur":4.77}],"8":[{"line":14,"file":"l15.m4a","laugh":1.59,"dur":4.16},{"line":15,"file":"l16.m4a","laugh":1.59,"dur":3.97},{"line":16,"file":"l17.m4a","laugh":1.59,"dur":3.61},{"line":17,"file":"l18.m4a","laugh":1.59,"dur":4.11},{"line":18,"file":"l19.m4a","laugh":1.59,"dur":5.56},{"line":19,"file":"l20.m4a","laugh":1.59,"dur":3.23}],"9":[{"line":16,"file":"l17.m4a","laugh":3.79,"dur":7.51},{"line":17,"file":"l18.m4a","laugh":3.79,"dur":7.03},{"line":18,"file":"l19.m4a","laugh":3.79,"dur":7.23},{"line":19,"file":"l20.m4a","laugh":3.79,"dur":6.64},{"line":0,"file":"l01.m4a","laugh":3.79,"dur":6.87},{"line":1,"file":"l02.m4a","laugh":3.79,"dur":6.98}],"10":[{"line":18,"file":"l19.m4a","laugh":2.18,"dur":5.63},{"line":19,"file":"l20.m4a","laugh":2.18,"dur":4.84},{"line":0,"file":"l01.m4a","laugh":2.18,"dur":5.12},{"line":1,"file":"l02.m4a","laugh":2.18,"dur":5.44},{"line":2,"file":"l03.m4a","laugh":2.18,"dur":5.15},{"line":3,"file":"l04.m4a","laugh":2.18,"dur":4.51}]};
 const MAXV = 25;
+const SHOW_TEXT = false;   // v7: no on-screen/captured text (demon captions, 'turn up your volume'). Set true to restore.
 const OPACITY_SCALE = 0.5;   // actual demon opacity = displayed slider value x 0.5
 const D = { sel: 0, value: 10, tex: {}, idx: 0, armed: true, laughStart: -10, laughDur: 1.8, capT: -10, capDur: 3.4, capText: '',
   anchor: null, prompted: false, twitchAt: 3, twitchT: -10, twitchDir: 1, glitchAt: 8, glitchT: -10, sx: -1, sy: -1, vis: true };
@@ -639,7 +717,7 @@ function unlockAudio() {
 }
 async function preloadVoice(i) {
   for (const v of (VOICE[i] || [])) {
-    const url = `demons/voice/d${i}/${v.file}?v=6`;
+    const url = `demons/voice/d${i}/${v.file}?v=7`;
     if (voiceCache[url]) continue;
     voiceCache[url] = {};
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(r.status)).then(b => { voiceCache[url].blobUrl = URL.createObjectURL(b); return b.arrayBuffer(); })
@@ -741,7 +819,7 @@ shadowMesh.visible = false; dScene.add(shadowMesh); dScene.add(demonMesh);
 const texLoader = new THREE.TextureLoader();
 function loadDemonTex(i) {
   if (D.tex[i]) return Promise.resolve(D.tex[i]);
-  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=6`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
+  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=7`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
 }
 
 // ---- world anchoring with DeviceOrientation (alpha/beta/gamma) ----
@@ -829,16 +907,16 @@ function drawCaption(text) {
 
 function demonLaugh() {
   if (!D.sel) return;
-  if (!D.prompted) { D.prompted = true; showVolumePrompt(); }   // only at the wall, once per selection
+  if (!D.prompted) { D.prompted = true; if (SHOW_TEXT) showVolumePrompt(); }   // only at the wall, once per selection
   const list = VOICE[D.sel] || [];
   const v = list.length ? list[D.idx % list.length] : null; D.idx++;
   const li = v ? v.line : (D.idx - 1) % DEMON_LINES.length;
   D.capText = DEMON_LINES[li]; S.lastLine = D.capText;
-  drawCaption(D.capText);
+  if (SHOW_TEXT) drawCaption(D.capText);
   const laughDur = v ? v.laugh : 1.6, total = v ? v.dur : 3.4;
   const start = () => { D.laughStart = t; D.laughDur = laughDur; D.capT = t + laughDur * 0.85; D.capDur = Math.max(2.6, total - laughDur + 0.9); };
   start();   // visuals start immediately (audio start re-syncs below)
-  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=6`, start); else playLaugh();
+  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=7`, start); else playLaugh();
   if (navigator.vibrate) navigator.vibrate([40, 30, 40, 30, 60]);
 }
 function placeDemon(tex) {
@@ -911,7 +989,7 @@ function updateDemon(tt, dt) {
   S.demonPos = [Math.round(x), Math.round(y)];
   // caption: shown while the line is spoken, left of the slider/icon column
   const ct = tt - D.capT;
-  if (ct >= 0 && ct < D.capDur && D.capText) {
+  if (SHOW_TEXT && ct >= 0 && ct < D.capDur && D.capText) {
     const px = (S.W - 130) / 2 + 4;
     const py = Math.max(260, S.H * 0.40);   // fixed: upper-middle, clear of the flash button and bottom controls
     capMesh.position.set(px, py, 0); capMesh.visible = true;
@@ -968,7 +1046,7 @@ async function selectDemon(i) {
   const bar = $('#demonBar');
   for (let i = 1; i <= 10; i++) {
     const b = document.createElement('button'); b.dataset.i = i; b.setAttribute('aria-label', 'Demon ' + i);
-    b.innerHTML = `<img src="demons/t${i}.png?v=6" alt="" draggable="false">`;
+    b.innerHTML = `<img src="demons/t${i}.png?v=7" alt="" draggable="false">`;
     b.addEventListener('click', e => { e.preventDefault(); selectDemon(i); });
     bar.appendChild(b);
   }

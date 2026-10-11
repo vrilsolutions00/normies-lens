@@ -6,7 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1e1530">
-<title>Infinity Lens ✦ Normies Awakening</title>
+<title>Renee, You Had to Be There ✨</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&family=Quicksand:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
@@ -18,8 +18,8 @@
 
 <div id="ui" class="hidden">
   <div class="top">
-    <button id="modeBtn" class="pill" aria-label="Change style"><span id="modeName">Infinity</span><span class="dots"><i></i><i></i><i></i></span></button>
-    <button id="wmBtn" class="icon small on" aria-label="Toggle watermark" title="Watermark">✦</button>
+    <button id="flashBtn" class="icon small left" aria-label="Flash" title="Flash">⚡</button>
+    <button id="wmBtn" class="icon small" aria-label="Toggle watermark" title="Watermark">✦</button>
   </div>
   <div id="status" class="status">loading tracking…</div>
   <div id="recTimer" class="rec-timer hidden">● 0:00</div>
@@ -35,8 +35,8 @@
 <div id="start" class="overlay">
   <div class="card">
     <div class="sigil">✦</div>
-    <h1>Infinity Lens</h1>
-    <p class="sub">a soft mirror room for your awakening</p>
+    <h1>Renee, You Had to Be There <span class="spark">✨</span></h1>
+    <p class="sub">a peek at what I saw</p>
     <button id="startBtn" class="cta">Tap to start</button>
     <p class="hint">Allow camera and motion access when asked. Tilt your phone or move your head to make the crystals shimmer. Look into the lens to light your third eye.</p>
     <p id="startErr" class="err hidden"></p>
@@ -57,6 +57,7 @@
 </div>
 
 <div id="flash" class="flash"></div>
+<div id="screenFlash" class="screen-flash"></div>
 <script type="module" src="app.js"></script>
 </body>
 </html>

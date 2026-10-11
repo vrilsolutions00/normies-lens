@@ -1,16 +1,15 @@
-// Infinity Lens ✦ Normies Awakening
+// Renee, You Had to Be There ✨ — a peek at what I saw
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
 THREE.ColorManagement.enabled = false;
 const MP_VER = '0.10.14';
 const FACE_URL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 const HAND_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-const MODES = ['Infinity', 'Kaleidoscope', 'Sacred Geometry'];
 
 const $ = s => document.querySelector(s);
 const canvas = $('#gl'), video = $('#video');
 const S = {
-  mode: 0, prevMode: 0, modeMix: 1, facing: 'user', mirror: true, watermark: true,
+  mode: 0, prevMode: 0, modeMix: 1, facing: 'user', mirror: true, watermark: false,
   hasCam: 0, stream: null, recording: false, rec: null, recChunks: [], recStart: 0,
   W: innerWidth, H: innerHeight, aspect: innerWidth / innerHeight,
 };
@@ -52,83 +51,44 @@ vec3 grade(vec3 c){
   float l = dot(c, vec3(0.299, 0.587, 0.114));
   vec3 plum = vec3(0.16, 0.10, 0.26), lav = vec3(0.64, 0.56, 0.90), blush = vec3(0.98, 0.78, 0.86), cream = vec3(1.0, 0.94, 0.86);
   vec3 g = l < 0.35 ? mix(plum, lav, l / 0.35) : (l < 0.7 ? mix(lav, blush, (l - 0.35) / 0.35) : mix(blush, cream, (l - 0.7) / 0.3));
-  return mix(g, c, 0.45);
+  return mix(g, c, 0.5) * 0.95;
 }
-vec3 infinityRoom(vec2 s){
-  vec2 p = (s - 0.5) * 2.0 - uPar;   // vanishing point shifts with tilt (parallax)
-  float dx = abs(p.x), dy = abs(p.y), d = max(dx, dy);
-  float R = 0.64, t = uTime;
-  vec3 col;
-  if (d < R) {
-    col = grade(cam(s));
-    float x = log(max(d, 1e-3) / R) / log(0.72) + 0.35;
-    float fr = fract(x), n = floor(x);
-    float fade = 1.0 - smoothstep(0.0, 4.0, x);
-    col += pal(n * 0.17 + 0.1) * smoothstep(0.07, 0.0, fr) * fade * 0.28;
-    col = mix(col, col * 0.86 + vec3(0.03, 0.01, 0.06), smoothstep(R * 0.7, R, d));
-  } else {
-    bool horiz = dy > dx;
-    float a = horiz ? p.x / d : p.y / d;
-    float z = 1.0 / d;
-    float w = (z - 1.0) / (1.0 / R - 1.0);
-    vec2 ru = horiz ? vec2(a * 0.5 + 0.5, z * 0.55) : vec2(z * 0.55, a * 0.5 + 0.5);
-    vec3 refl = grade(cam(ru));
-    vec3 wall = mix(vec3(0.13, 0.08, 0.21), refl, 0.38);
-    float sa = abs(fract(a * 3.0 + 0.5) - 0.5);
-    float sz = fract(z * 1.6);
-    float seam = smoothstep(0.012 * d, 0.0, sa) * 0.16 + smoothstep(0.02, 0.0, sz) * 0.10 + smoothstep(0.006, 0.0, abs(dx - dy)) * 0.35;
-    wall += vec3(1.0, 0.9, 0.95) * seam;
-    col = mix(wall, vec3(0.17, 0.11, 0.27), w * 0.55);
-    col += vec3(1.0, 0.88, 0.66) * smoothstep(0.014, 0.0, abs(d - R)) * 0.8;
-  }
-  return col;
-}
-vec3 kaleido(vec2 s){
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+// soft, mask-only reflection of the person (no edges, no frames)
+vec3 ghost(vec2 s, vec2 fc, vec2 offset, float sc, float flip, out float m){
   float asp = uRes.x / uRes.y;
-  vec2 c = uFace.z > 0.5 ? uFace.xy : vec2(0.5);
-  vec2 p = (s - 0.5) * vec2(asp, 1.0);
-  float r = length(p);
-  float a = atan(p.y, p.x);
-  float seg = PI / 6.0;
-  a = mod(a, 2.0 * seg); a = abs(a - seg);
-  float K = 1.9;
-  float lr = log(max(r, 1e-4)) / log(K) + 0.3;
-  float rr = pow(K, fract(lr)) * 0.10;
-  vec2 q = vec2(cos(a + PI * 0.5), sin(a + PI * 0.5)) * rr;
-  vec3 col = grade(cam(c + q * vec2(1.0 / max(asp, 0.5), 1.0)));
-  col *= 0.9 + 0.1 * pal(floor(lr) * 0.21);
-  col += vec3(1.0, 0.88, 0.66) * smoothstep(0.05, 0.0, fract(lr)) * 0.35;
-  col += vec3(0.85, 0.78, 1.0) * smoothstep(0.02, 0.0, a * r) * 0.25;
-  col = mix(vec3(0.17, 0.11, 0.27), col, smoothstep(0.0, 0.14, r));
-  col += pal(0.1) * exp(-r * 30.0) * 0.6;
-  return col;
+  vec2 l = (s - fc - offset) / sc;
+  if (flip > 0.5) l.x = -l.x;
+  vec2 q = l * vec2(asp, 1.0);
+  m = 1.0 - smoothstep(0.06, 0.36, length(q * vec2(1.0, 0.72)));
+  return grade(cam(fc + l));
 }
-vec3 sacred(vec2 s){
-  float asp = uRes.x / uRes.y;
-  vec3 col = grade(cam(s));
-  vec2 c = uFace.z > 0.5 ? uFace.xy : vec2(0.5, 0.55);
-  vec2 p = (s - c) * vec2(asp, 1.0);
-  float ang = 0.0; p = mat2(cos(ang), -sin(ang), sin(ang), cos(ang)) * p;
-  float rr = 0.11, dm = 1e3;
-  for (int i = -2; i <= 2; i++) for (int j = -2; j <= 2; j++) {
-    vec2 cc = vec2(float(i) + 0.5 * float(j), float(j) * 0.8660254) * rr;
-    if (length(cc) > rr * 2.01) continue;
-    dm = min(dm, abs(length(p - cc) - rr));
-  }
-  dm = min(dm, abs(length(p) - rr * 3.0));
-  float px = 1.6 / uRes.y;
-  float line = smoothstep(px * 2.0, 0.0, dm);
-  col += mix(vec3(1.0, 0.88, 0.62), pal(length(p) * 2.0), 0.4) * (line * 0.75 + exp(-dm * 70.0) * 0.22);
-  col = mix(col, vec3(0.18, 0.12, 0.29), smoothstep(0.45, 1.2, length(p)) * 0.6);
-  return col;
-}
-vec3 modeCol(float m, vec2 s){ return m < 0.5 ? infinityRoom(s) : (m < 1.5 ? kaleido(s) : sacred(s)); }
 void main(){
   vec2 s = vUv;
-  vec3 col = modeCol(uMode, s);
-  if (uMix < 0.999) col = mix(modeCol(uPrev, s), col, uMix);
-    vec2 v = (s - 0.5) * 2.0;
-  col = mix(col, vec3(0.12, 0.08, 0.2), smoothstep(0.9, 1.6, length(v)) * 0.5);
+  float asp = uRes.x / uRes.y;
+  // deep plum infinity: soft glow toward the (parallax-shifted) vanishing point
+  vec2 vp = vec2(0.5) - uPar * 0.5;
+  vec2 p = (s - vp) * vec2(asp, 1.0);
+  float r = length(p);
+  vec3 col = mix(vec3(0.24, 0.17, 0.36), vec3(0.06, 0.035, 0.11), smoothstep(0.0, 0.95, r));
+  // very low-frequency pastel bounce light (like light caught between mirrors), no structure
+  float n = vnoise(p * 2.2 + 3.0) * 0.6 + vnoise(p * 4.5 - 7.0) * 0.4;
+  col += pal(n * 0.8 + 0.15) * 0.05 * (1.0 - smoothstep(0.2, 1.1, r));
+  // the person, softly composited inside the gem space
+  vec2 fc = uFace.z > 0.5 ? uFace.xy + vec2(0.0, -0.12) : vec2(0.5, 0.45);
+  float mL, mR, mB, m0;
+  vec3 gL = ghost(s, fc, vec2(-0.40, 0.03) - uPar * 0.15, 0.62, 1.0, mL);
+  vec3 gR = ghost(s, fc, vec2(0.40, 0.03) - uPar * 0.15, 0.62, 1.0, mR);
+  vec3 gB = ghost(s, fc, vec2(0.0, 0.10) - uPar * 0.30, 0.36, 0.0, mB);
+  col = mix(col, gB * 0.8, mB * 0.20 * uHasCam);
+  col = mix(col, gL * 0.85, mL * 0.22 * uHasCam);
+  col = mix(col, gR * 0.85, mR * 0.22 * uHasCam);
+  vec3 me = ghost(s, fc, vec2(0.0), 1.0, 0.0, m0);
+  float mm = 1.0 - smoothstep(0.10, 0.44, length((s - fc) * vec2(asp, 1.0) * vec2(1.0, 0.68)));
+  col = mix(col, me, mm * mix(0.0, 0.88, uHasCam));
+  // soft vignette into the dark
+  col *= 1.0 - smoothstep(0.55, 1.35, length((s - 0.5) * 2.0)) * 0.55;
   gl_FragColor = vec4(col, 1.0);
 }`,
 });
@@ -144,13 +104,13 @@ cam3.position.set(0, 0, CAMZ);
 
 // Static, perfectly aligned 3D grid of tiny square-cut pastel gems (rendered as points).
 // Scene scale: 1 unit = 6 inches (grid spacing). Gems are pinpoints: ~2-3 px up close, sub-pixel sparkle points far away.
-const GRID = 1.0, DEPTH = 46;
-const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 8.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
+const GRID = 1.0, DEPTH = 64;
+const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 14.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
   uLightDir: { value: new THREE.Vector3(-0.35, 0.65, 0.7).normalize() }, uLightCol: { value: new THREE.Vector3(1, 0.97, 0.93) }, uLightI: { value: 1.0 } };
 const crystalMat = new THREE.ShaderMaterial({
   uniforms: crystalUniforms, transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending,
   vertexShader: /* glsl */`
-attribute vec4 aSeed;
+attribute vec4 aSeed; attribute float aBig;
 uniform float uDpr, uFogNear, uFogFar; uniform vec2 uView; uniform vec3 uLightDir, uLightCol; uniform float uLightI;
 varying vec3 vCol; varying float vAlpha; varying float vGlint;
 vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
@@ -169,16 +129,16 @@ void main(){
   float glint = clamp(max(g1, g2) * 1.6 * uLightI, 0.0, 1.0);
   // dispersion: hue walks through the rainbow as the view angle changes
   float hue = fract(aSeed.z + dot(N1, V) * 4.0 + dot(N2, V) * 3.0 + dot(V.xy, vec2(2.3, 1.7)));
-  vec3 pastel = 0.80 + 0.20 * cos(6.2831853 * (vec3(0.0, 0.33, 0.67) + aSeed.z));
+  vec3 pastel = 0.70 + 0.30 * cos(6.2831853 * (vec3(0.0, 0.33, 0.67) + aSeed.z));
   vec3 prism = rainbow(hue);
   vec3 hi = mix(prism, prism * uLightCol * 1.15, 0.45);       // warm room light tints the highlights warmer
   vCol = mix(pastel * 0.85 + prism * 0.15, hi * 1.25 + 0.2 * uLightCol, glint);
-  float css = 3.0 / sqrt(max(dist, 1.0)) * (1.0 + glint * 1.6);   // ~2 px up close, sub-pixel far; glints swell slightly
+  float css = 3.0 / sqrt(max(dist, 1.0)) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.6);   // ~2 px up close, sub-pixel far; glints swell slightly
   float px = css * uDpr;
   gl_PointSize = max(px, 1.0);
   float sub = clamp(px, 0.0, 1.0);
   float fog = 1.0 - smoothstep(uFogNear, uFogFar, dist);
-  vAlpha = fog * sub * smoothstep(0.5, 1.2, dist) * (0.75 + 0.25 * aSeed.y + glint * 0.8);
+  vAlpha = fog * sqrt(sub) * smoothstep(0.5, 1.2, dist) * (0.75 + 0.25 * aSeed.y + glint * 0.8);
   vGlint = glint;
   gl_Position = projectionMatrix * mv;
 }`,
@@ -201,7 +161,7 @@ let crystals = null;
 function hash3(x, y, z, k) { const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + k * 19.19) * 43758.5453; return s - Math.floor(s); }
 function buildCrystals() {
   if (crystals) { scene.remove(crystals); crystals.geometry.dispose(); }
-  const pos = [], seed = [];
+  const pos = [], seed = [], big = [];
   // perfectly aligned lattice (integer grid, offset by half a cell so no gem sits on the lens axis), filling the view frustum
   for (let iz = 0; iz < DEPTH + 2; iz++) {
     const z = CAMZ - 1 - iz * GRID, dist = CAMZ - z;
@@ -210,11 +170,13 @@ function buildCrystals() {
       for (let ix = Math.floor(-hw); ix <= Math.ceil(hw); ix++) {
         pos.push((ix + 0.5) * GRID, (iy + 0.5) * GRID, z);
         seed.push(hash3(ix, iy, iz, 1), hash3(ix, iy, iz, 2), hash3(ix, iy, iz, 3), hash3(ix, iy, iz, 4));
+        big.push(((pos.length / 3 - 1) % 10 === 0) ? 1 : 0);   // every 10th gem is 50% bigger
       }
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('aSeed', new THREE.Float32BufferAttribute(seed, 4));
+  g.setAttribute('aBig', new THREE.Float32BufferAttribute(big, 1));
   crystals = new THREE.Points(g, crystalMat);
   crystals.frustumCulled = false;
   scene.add(crystals);
@@ -231,13 +193,8 @@ const glowTex = canvasTex(256, 256, (g, w) => {
   gr.addColorStop(0, 'rgba(255,250,235,1)'); gr.addColorStop(0.12, 'rgba(255,226,170,0.9)');
   gr.addColorStop(0.35, 'rgba(214,190,255,0.45)'); gr.addColorStop(0.7, 'rgba(255,180,210,0.12)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = gr; g.fillRect(0, 0, w, w);
-  g.strokeStyle = 'rgba(255,230,180,0.55)'; g.lineWidth = 1.5;
-  const rr = w * 0.09;
-  for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3; g.beginPath(); g.arc(r + Math.cos(a) * rr, r + Math.sin(a) * rr, rr, 0, Math.PI * 2); g.stroke(); }
-  g.beginPath(); g.arc(r, r, rr, 0, Math.PI * 2); g.stroke();
-  g.beginPath(); g.arc(r, r, rr * 2, 0, Math.PI * 2); g.stroke();
 });
-const sparkTex = canvasTex(64, 64, (g, w) => {
+const _unusedSpark = canvasTex(64, 64, (g, w) => {
   const r = w / 2; let gr = g.createRadialGradient(r, r, 0, r, r, r);
   gr.addColorStop(0, 'rgba(255,255,250,1)'); gr.addColorStop(0.25, 'rgba(255,220,240,0.6)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = gr; g.fillRect(0, 0, w, w);
@@ -422,9 +379,7 @@ function frame() {
   const fresh = now - faceS.seen < 450;
   faceS.present += ((fresh ? 1 : 0) - faceS.present) * Math.min(1, dt * 4);
 
-  S.modeMix = Math.min(1, S.modeMix + dt * 1.6);
   Object.assign(bgUniforms.uTime, { value: t });
-  bgUniforms.uMode.value = S.mode; bgUniforms.uPrev.value = S.prevMode; bgUniforms.uMix.value = S.modeMix;
   bgUniforms.uFace.value.set(faceS.eu, faceS.ev, faceS.present > 0.5 ? 1 : 0);
 
   // third-eye glow
@@ -443,21 +398,32 @@ function frame() {
 }
 
 // ---------- UI ----------
-function setMode(m) {
-  S.prevMode = S.mode; S.mode = m; S.modeMix = 0;
-  $('#modeName').textContent = MODES[m];
-  document.querySelectorAll('.pill .dots i').forEach((d, i) => d.classList.toggle('on', i === m));
-}
-$('#modeBtn').onclick = () => setMode((S.mode + 1) % MODES.length);
 $('#wmBtn').onclick = () => { S.watermark = !S.watermark; $('#wmBtn').classList.toggle('on', S.watermark); placeWatermark(); };
-$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); } catch (e) { setStatus('could not switch camera', true); } };
+$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); syncTorch(); } catch (e) { setStatus('could not switch camera', true); } };
+
+// ---------- flash: rear torch where supported, otherwise a warm "screen flash" ----------
+S.flash = false;
+function torchTrack() {
+  const tr = S.stream && S.stream.getVideoTracks()[0];
+  if (!tr || S.facing === 'user' || !tr.getCapabilities) return null;
+  try { return tr.getCapabilities().torch ? tr : null; } catch (e) { return null; }
+}
+async function setTorch(on) { const tr = torchTrack(); if (!tr) return false; try { await tr.applyConstraints({ advanced: [{ torch: on }] }); return true; } catch (e) { return false; } }
+function syncTorch() { if (S.recording) setTorch(S.flash); }
+$('#flashBtn').onclick = () => {
+  S.flash = !S.flash; $('#flashBtn').classList.toggle('on', S.flash);
+  setStatus(S.flash ? (torchTrack() ? '⚡ flash on (torch)' : '⚡ flash on (screen flash)') : 'flash off', true);
+  if (S.recording) setTorch(S.flash);
+};
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function screenFlash(ms) { const el = $('#screenFlash'); el.classList.add('on'); S.screenFlashes = (S.screenFlashes || 0) + 1; await wait(ms); return () => el.classList.remove('on'); }
 
 function flash() { const f = $('#flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on'))); }
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 let currentFile = null, currentUrl = null;
 function showPreview(blob, kind) {
   const ext = kind === 'image' ? 'png' : (blob.type.includes('mp4') ? 'mp4' : 'webm');
-  currentFile = new File([blob], `infinity-lens-${stamp()}.${ext}`, { type: blob.type || (kind === 'image' ? 'image/png' : 'video/mp4') });
+  currentFile = new File([blob], `you-had-to-be-there-${stamp()}.${ext}`, { type: blob.type || (kind === 'image' ? 'image/png' : 'video/mp4') });
   if (currentUrl) URL.revokeObjectURL(currentUrl);
   currentUrl = URL.createObjectURL(blob);
   const media = $('#previewMedia'); media.innerHTML = '';
@@ -471,13 +437,23 @@ $('#closePrev').onclick = () => $('#preview').classList.add('hidden');
 $('#shareBtn').onclick = async () => {
   if (!currentFile) return;
   try {
-    if (navigator.canShare && navigator.canShare({ files: [currentFile] })) { await navigator.share({ files: [currentFile], title: 'Infinity Lens' }); return; }
+    if (navigator.canShare && navigator.canShare({ files: [currentFile] })) { await navigator.share({ files: [currentFile], title: 'Renee, You Had to Be There ✨', text: 'a peek at what I saw' }); return; }
   } catch (e) { if (e.name === 'AbortError') return; console.warn(e); }
   $('#dlBtn').click();
 };
-$('#shutter').onclick = () => {
-  flash();
-  canvas.toBlob(b => { if (b) showPreview(b, 'image'); }, 'image/png');
+const grab = () => new Promise(res => requestAnimationFrame(() => canvas.toBlob(res, 'image/png')));
+let capturing = false;
+$('#shutter').onclick = async () => {
+  if (capturing) return; capturing = true;
+  try {
+    let blob;
+    if (S.flash && torchTrack()) {             // rear camera with torch: fire it like a flash
+      await setTorch(true); await wait(350); blob = await grab(); if (!S.recording) setTorch(false);
+    } else if (S.flash) {                      // front camera / iOS: bright warm-white screen for ~200 ms
+      const off = await screenFlash(140); blob = await grab(); await wait(60); off();
+    } else { flash(); blob = await grab(); }
+    if (blob) showPreview(blob, 'image');
+  } finally { capturing = false; }
 };
 function pickMime() {
   const opts = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
@@ -498,13 +474,14 @@ $('#recBtn').onclick = () => {
   S.recChunks = []; S.rec = rec; S.recording = true; S.recStart = performance.now();
   rec.ondataavailable = e => { if (e.data && e.data.size) S.recChunks.push(e.data); };
   rec.onstop = () => {
-    S.recording = false; clearInterval(recTimerId);
+    S.recording = false; clearInterval(recTimerId); setTorch(false);
     $('#recBtn').classList.remove('rec'); $('#recTimer').classList.add('hidden');
     stream.getTracks().forEach(tr => tr.stop());
     const blob = new Blob(S.recChunks, { type: rec.mimeType || mime || 'video/mp4' });
     if (blob.size) showPreview(blob, 'video');
   };
   rec.start(500);
+  if (S.flash) setTorch(true);
   $('#recBtn').classList.add('rec'); $('#recTimer').classList.remove('hidden');
   recTimerId = setInterval(() => {
     const s = Math.floor((performance.now() - S.recStart) / 1000);
@@ -531,7 +508,6 @@ $('#startBtn').onclick = async () => {
 };
 $('#demoBtn').onclick = () => { requestOrientation(); begin(false); };
 
-setMode(0);
 resize();
 document.fonts && document.fonts.load('italic 500 33px "Cormorant Garamond"').finally(buildWatermark);
 if (!document.fonts) buildWatermark();

@@ -29,7 +29,7 @@ html,body{margin:0;height:100%;background:var(--plum);overflow:hidden;overscroll
 #start{background:radial-gradient(ellipse at 50% 35%,#4a3570 0%,#2a1d44 45%,#170f26 100%)}
 .card{max-width:340px;text-align:center}
 .sigil{font-size:34px;color:var(--gold);text-shadow:0 0 18px var(--gold);margin-bottom:6px}
-h1{font:500 44px/1.05 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing:.03em;background:linear-gradient(90deg,#ffd6b3,#ffc2d6,#c9b6ff,#b3d6ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+h1{font:500 38px/1.08 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing:.03em;background:linear-gradient(90deg,#ffd6b3,#ffc2d6,#c9b6ff,#b3d6ff);-webkit-background-clip:text;background-clip:text;color:transparent}
 .sub{font:italic 500 19px 'Cormorant Garamond',Georgia,serif;color:rgba(255,248,239,.75);margin:8px 0 28px}
 .cta{border:0;border-radius:999px;padding:15px 30px;font:600 16px Quicksand,sans-serif;letter-spacing:.06em;color:#2a1d44;
   background:linear-gradient(90deg,#ffe2b8,#ffc8da,#d8c8ff);box-shadow:0 0 26px rgba(255,200,218,.45)}
@@ -44,3 +44,10 @@ h1{font:500 44px/1.05 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing
 .ghost{border:1px solid rgba(243,217,160,.5);background:transparent;color:var(--ink);border-radius:999px;padding:13px 18px;font:600 14px Quicksand,sans-serif;text-decoration:none}
 .flash{position:fixed;inset:0;background:#fff6ea;opacity:0;pointer-events:none;transition:opacity .35s;z-index:9}
 .flash.on{opacity:.75;transition:none}
+
+.icon.small.left{right:auto;left:16px}
+#flashBtn{color:rgba(255,248,239,.5)}
+#flashBtn.on{color:#fff1c9;text-shadow:0 0 10px #ffe7a8;border-color:#ffe7a8}
+.screen-flash{position:fixed;inset:0;background:#fff7ea;opacity:0;pointer-events:none;z-index:20}
+.screen-flash.on{opacity:1}
+h1 .spark{color:#fff;-webkit-text-fill-color:#fff}

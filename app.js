@@ -14,6 +14,9 @@ const S = {
   W: innerWidth, H: innerHeight, aspect: innerWidth / innerHeight,
 };
 window.__lens = S; // for debugging/tests
+// show any runtime error on screen (tiny, bottom) so an iPhone-only failure is visible instead of silent
+addEventListener('error', e => { try { S.lastError = String(e.message || e); const el = document.getElementById('status'); if (el) { el.textContent = 'err: ' + S.lastError.slice(0, 80); el.style.opacity = 1; } } catch (_) {} });
+addEventListener('unhandledrejection', e => { try { S.lastError = 'promise: ' + String(e.reason && e.reason.message || e.reason); } catch (_) {} });
 
 // ---------- renderer ----------
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false, powerPreference: 'high-performance' });
@@ -31,7 +34,7 @@ const blankTex = new THREE.DataTexture(new Uint8Array([90, 75, 115, 255]), 1, 1)
 const bgUniforms = {
   uCam: { value: blankTex }, uScale: { value: new THREE.Vector2(1, 1) }, uMirror: { value: 1 },
   uRes: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 }, uMode: { value: 0 }, uPrev: { value: 0 },
-  uMix: { value: 1 }, uPar: { value: new THREE.Vector2() }, uFace: { value: new THREE.Vector3(0.5, 0.55, 0) }, uMotion: { value: 0 }, uHasCam: { value: 0 },
+  uMix: { value: 1 }, uPar: { value: new THREE.Vector2() }, uFace: { value: new THREE.Vector3(0.5, 0.55, 0) }, uMotion: { value: 0 }, uHasCam: { value: 0 }, uBoost: { value: 0 },
 };
 const bgMat = new THREE.ShaderMaterial({
   uniforms: bgUniforms, depthTest: false, depthWrite: false,
@@ -39,7 +42,7 @@ const bgMat = new THREE.ShaderMaterial({
   fragmentShader: /* glsl */`
 precision highp float;
 uniform sampler2D uCam; uniform vec2 uScale; uniform float uMirror; uniform vec2 uRes; uniform float uTime;
-uniform vec2 uPar; uniform float uMode; uniform float uPrev; uniform float uMix; uniform vec3 uFace; uniform float uMotion; uniform float uHasCam;
+uniform vec2 uPar; uniform float uMode; uniform float uPrev; uniform float uMix; uniform vec3 uFace; uniform float uMotion; uniform float uHasCam; uniform float uBoost;
 varying vec2 vUv;
 #define PI 3.14159265
 vec3 pal(float h){ return 0.80 + 0.20*cos(6.2831853*(h + vec3(0.0, 0.33, 0.67))); }
@@ -69,6 +72,7 @@ void main(){
   float asp = uRes.x / uRes.y;
   // camera feed: full-screen, fully opaque, untouched colors (no grading, no mask, no vignette, no glow)
   vec3 col = uHasCam > 0.5 ? texture2D(uCam, clamp(camUV(s), 0.0, 1.0)).rgb : vec3(0.075, 0.045, 0.125);
+  col = mix(col, 1.0 - (1.0 - col) * (1.0 - col) * 0.82, uBoost);   // flash ON: brighter exposure (lifts shadows, no blur)
   gl_FragColor = vec4(col, 1.0);
 }`,
 });
@@ -428,9 +432,12 @@ $('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user
 // ---------- flash: rear torch where supported, otherwise a warm "screen flash" ----------
 S.flash = false;
 function torchTrack() {
-  const tr = S.stream && S.stream.getVideoTracks()[0];
-  if (!tr || S.facing === 'user' || !tr.getCapabilities) return null;
-  try { return tr.getCapabilities().torch ? tr : null; } catch (e) { return null; }
+  try {
+    const tr = S.stream && S.stream.getVideoTracks && S.stream.getVideoTracks()[0];
+    if (!tr || S.facing === 'user' || typeof tr.getCapabilities !== 'function') return null;
+    const caps = tr.getCapabilities() || {};
+    return caps.torch ? tr : null;
+  } catch (e) { return null; }
 }
 async function setTorch(on) { const tr = torchTrack(); if (!tr) return false; try { await tr.applyConstraints({ advanced: [{ torch: on }] }); return true; } catch (e) { return false; } }
 function syncTorch() { if (S.recording) setTorch(S.flash); }
@@ -441,18 +448,41 @@ function renderFlashUI() {
   $('#flashState').classList.toggle('on', S.flash);
   // soft live fill light (bright edges) on the front camera while flash is on
   $('#fillRing').classList.toggle('on', S.flash);
+  bgUniforms.uBoost.value = S.flash ? 0.55 : 0;
+}
+function flashToast(t) {
+  const el = $('#flashToast'); el.textContent = t; el.classList.remove('hidden'); el.classList.add('show');
+  clearTimeout(flashToast.tm); flashToast.tm = setTimeout(() => { el.classList.remove('show'); el.classList.add('hidden'); }, 3200);
 }
 function toggleFlash() {
-  S.flash = !S.flash; S.flashToggles = (S.flashToggles || 0) + 1; renderFlashUI();
-  setStatus(S.flash ? (torchTrack() ? 'flash ON · torch + screen' : 'flash ON · screen flash') : 'flash OFF', true);
-  if (S.recording) setTorch(S.flash);
+  // state + visible UI FIRST, then anything that could throw on iOS (torch / capabilities / toast) is isolated
+  S.flash = !S.flash; S.flashToggles = (S.flashToggles || 0) + 1;
+  const b = $('#flashBtn');
+  if (b) { b.classList.toggle('on', S.flash); b.setAttribute('aria-pressed', S.flash ? 'true' : 'false'); }
+  const lbl = $('#flashLabel'); if (lbl) lbl.textContent = S.flash ? 'FLASH ON' : 'FLASH OFF';
+  try { renderFlashUI(); } catch (e) { S.flashErr = String(e); }
+  let torch = null; try { torch = torchTrack(); } catch (e) { torch = null; }
+  try { flashToast(S.flash ? (torch ? 'Flash on (LED torch + screen flash)' : "Flash on (screen flash, iPhone browsers can't use the LED)") : 'Flash off'); } catch (e) {}
+  try { if (S.recording) setTorch(S.flash).catch(() => {}); } catch (e) {}
 }
-// iOS Safari: handle touchend AND click, de-duplicated (a touch is followed by a synthetic click)
-(() => {
-  const btn = $('#flashBtn'); let lastTouch = 0;
-  btn.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); lastTouch = Date.now(); toggleFlash(); }, { passive: false });
-  btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); if (Date.now() - lastTouch < 700) return; toggleFlash(); });
-})();
+// Bound only once the element exists; one toggle per physical tap (touchend / pointerup / click all de-duplicated).
+// A document-level capture listener also catches taps that land inside the button's rectangle even if some
+// other layer were ever on top of it.
+function bindFlash() {
+  const btn = $('#flashBtn'); if (!btn || btn.dataset.bound) return; btn.dataset.bound = '1';
+  let last = 0;
+  const fire = (e) => { if (e && e.cancelable) e.preventDefault(); const n = Date.now(); if (n - last < 350) return; last = n; toggleFlash(); };
+  btn.addEventListener('touchend', e => { e.stopPropagation(); fire(e); }, { passive: false });
+  btn.addEventListener('pointerup', e => { e.stopPropagation(); fire(e); });
+  btn.addEventListener('click', e => { e.stopPropagation(); fire(e); });
+  document.addEventListener('touchend', e => {
+    if (btn.classList.contains('hidden') || btn.contains(e.target)) return;
+    const t = e.changedTouches && e.changedTouches[0]; if (!t) return;
+    const r = btn.getBoundingClientRect();
+    if (t.clientX >= r.left - 14 && t.clientX <= r.right + 14 && t.clientY >= r.top - 14 && t.clientY <= r.bottom + 14) { S.flashRescued = (S.flashRescued || 0) + 1; fire(e); }
+  }, { capture: true, passive: false });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindFlash); else bindFlash();
 const wait = ms => new Promise(r => setTimeout(r, ms));
 // wait until the camera has delivered n fresh frames (so the captured frame is lit by the flash)
 function freshFrames(n) {
@@ -508,10 +538,10 @@ $('#shutter').onclick = async (e) => {
       const off = await screenFlash();
       const torch = torchTrack() ? await setTorch(true) : false;
       const t0 = performance.now();
-      await wait(torch ? 220 : 160); await freshFrames(3);       // let the camera expose for the extra light
+      await wait(torch ? 240 : 200); await freshFrames(3);       // let the camera expose for the extra light
       const shot = await snap();                                 // frame captured DURING the flash
       S.lastFlashCapture = { during: $('#screenFlash').classList.contains('on'), ms: Math.round(performance.now() - t0) };
-      const rest = 300 - (performance.now() - t0); if (rest > 0) await wait(rest);
+      const rest = 420 - (performance.now() - t0);   // ~400 ms of pure white if (rest > 0) await wait(rest);
       off(); if (torch && !S.recording) setTorch(false);
       blob = await encode(shot);
     } else { flash(); blob = await grab(); }
@@ -580,6 +610,7 @@ const DEMON_LINES = [
 // each demon speaks its own 6 lines (all 20 covered across the 10 demons), pre-rendered in its own voice
 const VOICE = {"1":[{"line":0,"file":"l01.m4a","laugh":2.07,"dur":4.29},{"line":1,"file":"l02.m4a","laugh":2.07,"dur":4.6},{"line":2,"file":"l03.m4a","laugh":2.07,"dur":4.29},{"line":3,"file":"l04.m4a","laugh":2.07,"dur":3.72},{"line":4,"file":"l05.m4a","laugh":2.07,"dur":4.52},{"line":5,"file":"l06.m4a","laugh":2.07,"dur":4.26}],"2":[{"line":2,"file":"l03.m4a","laugh":3.05,"dur":5.66},{"line":3,"file":"l04.m4a","laugh":3.05,"dur":5.28},{"line":4,"file":"l05.m4a","laugh":3.05,"dur":6.25},{"line":5,"file":"l06.m4a","laugh":3.05,"dur":5.8},{"line":6,"file":"l07.m4a","laugh":3.05,"dur":6.22},{"line":7,"file":"l08.m4a","laugh":3.05,"dur":6.98}],"3":[{"line":4,"file":"l05.m4a","laugh":2.63,"dur":6.62},{"line":5,"file":"l06.m4a","laugh":2.63,"dur":6.47},{"line":6,"file":"l07.m4a","laugh":2.63,"dur":7.04},{"line":7,"file":"l08.m4a","laugh":2.63,"dur":7.08},{"line":8,"file":"l09.m4a","laugh":2.63,"dur":6.32},{"line":9,"file":"l10.m4a","laugh":2.63,"dur":6.33}],"4":[{"line":6,"file":"l07.m4a","laugh":1.29,"dur":3.32},{"line":7,"file":"l08.m4a","laugh":1.29,"dur":4.07},{"line":8,"file":"l09.m4a","laugh":1.29,"dur":3.36},{"line":9,"file":"l10.m4a","laugh":1.29,"dur":2.97},{"line":10,"file":"l11.m4a","laugh":1.29,"dur":2.88},{"line":11,"file":"l12.m4a","laugh":1.29,"dur":3.05}],"5":[{"line":8,"file":"l09.m4a","laugh":1.27,"dur":3.37},{"line":9,"file":"l10.m4a","laugh":1.27,"dur":3.01},{"line":10,"file":"l11.m4a","laugh":1.27,"dur":2.77},{"line":11,"file":"l12.m4a","laugh":1.27,"dur":2.99},{"line":12,"file":"l13.m4a","laugh":1.27,"dur":3.25},{"line":13,"file":"l14.m4a","laugh":1.27,"dur":3.16}],"6":[{"line":10,"file":"l11.m4a","laugh":1.44,"dur":3.68},{"line":11,"file":"l12.m4a","laugh":1.44,"dur":3.9},{"line":12,"file":"l13.m4a","laugh":1.44,"dur":4.02},{"line":13,"file":"l14.m4a","laugh":1.44,"dur":4.15},{"line":14,"file":"l15.m4a","laugh":1.44,"dur":3.7},{"line":15,"file":"l16.m4a","laugh":1.44,"dur":4.01}],"7":[{"line":12,"file":"l13.m4a","laugh":1.47,"dur":4.88},{"line":13,"file":"l14.m4a","laugh":1.47,"dur":4.7},{"line":14,"file":"l15.m4a","laugh":1.47,"dur":4.13},{"line":15,"file":"l16.m4a","laugh":1.47,"dur":4.74},{"line":16,"file":"l17.m4a","laugh":1.47,"dur":4.39},{"line":17,"file":"l18.m4a","laugh":1.47,"dur":4.77}],"8":[{"line":14,"file":"l15.m4a","laugh":1.59,"dur":4.16},{"line":15,"file":"l16.m4a","laugh":1.59,"dur":3.97},{"line":16,"file":"l17.m4a","laugh":1.59,"dur":3.61},{"line":17,"file":"l18.m4a","laugh":1.59,"dur":4.11},{"line":18,"file":"l19.m4a","laugh":1.59,"dur":5.56},{"line":19,"file":"l20.m4a","laugh":1.59,"dur":3.23}],"9":[{"line":16,"file":"l17.m4a","laugh":3.79,"dur":7.51},{"line":17,"file":"l18.m4a","laugh":3.79,"dur":7.03},{"line":18,"file":"l19.m4a","laugh":3.79,"dur":7.23},{"line":19,"file":"l20.m4a","laugh":3.79,"dur":6.64},{"line":0,"file":"l01.m4a","laugh":3.79,"dur":6.87},{"line":1,"file":"l02.m4a","laugh":3.79,"dur":6.98}],"10":[{"line":18,"file":"l19.m4a","laugh":2.18,"dur":5.63},{"line":19,"file":"l20.m4a","laugh":2.18,"dur":4.84},{"line":0,"file":"l01.m4a","laugh":2.18,"dur":5.12},{"line":1,"file":"l02.m4a","laugh":2.18,"dur":5.44},{"line":2,"file":"l03.m4a","laugh":2.18,"dur":5.15},{"line":3,"file":"l04.m4a","laugh":2.18,"dur":4.51}]};
 const MAXV = 25;
+const OPACITY_SCALE = 0.5;   // actual demon opacity = displayed slider value x 0.5
 const D = { sel: 0, value: 10, tex: {}, idx: 0, armed: true, laughStart: -10, laughDur: 1.8, capT: -10, capDur: 3.4, capText: '',
   anchor: null, prompted: false, twitchAt: 3, twitchT: -10, twitchDir: 1, glitchAt: 8, glitchT: -10, sx: -1, sy: -1, vis: true };
 S.demon = D;
@@ -607,7 +638,7 @@ function unlockAudio() {
 }
 async function preloadVoice(i) {
   for (const v of (VOICE[i] || [])) {
-    const url = `demons/voice/d${i}/${v.file}?v=4`;
+    const url = `demons/voice/d${i}/${v.file}?v=5`;
     if (voiceCache[url]) continue;
     voiceCache[url] = {};
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(r.status)).then(b => { voiceCache[url].blobUrl = URL.createObjectURL(b); return b.arrayBuffer(); })
@@ -700,7 +731,7 @@ demonMesh.visible = false; dScene.add(demonMesh);
 const texLoader = new THREE.TextureLoader();
 function loadDemonTex(i) {
   if (D.tex[i]) return Promise.resolve(D.tex[i]);
-  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=4`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
+  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=5`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
 }
 
 // ---- world anchoring with DeviceOrientation (alpha/beta/gamma) ----
@@ -775,7 +806,7 @@ function demonLaugh() {
   const laughDur = v ? v.laugh : 1.6, total = v ? v.dur : 3.4;
   const start = () => { D.laughStart = t; D.laughDur = laughDur; D.capT = t + laughDur * 0.85; D.capDur = Math.max(2.6, total - laughDur + 0.9); };
   start();   // visuals start immediately (audio start re-syncs below)
-  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=4`, start); else playLaugh();
+  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=5`, start); else playLaugh();
   if (navigator.vibrate) navigator.vibrate([40, 30, 40, 30, 60]);
 }
 function placeDemon(tex) {
@@ -823,7 +854,7 @@ function updateDemon(tt, dt) {
   demonMesh.position.set(x + ox, y + oy, 0); demonMesh.scale.set(w * sx, h * sy, 1); demonMesh.rotation.z = rot;
   u.uTime.value = tt; u.uBreath.value = breath; u.uTilt.value = tilt; u.uFlex.value = flex; u.uStep.value = stepv; u.uJaw.value = jaw;
   u.uGlitch.value = glitch; u.uEye.value = eye; u.uFlick.value = flick;
-  u.uOpacity.value = D.vis ? Math.min(MAXV, D.value) / 100 : 0;      // never more than 25% visible
+  u.uOpacity.value = D.vis ? Math.min(MAXV, D.value) / 100 * OPACITY_SCALE : 0; S.demonOpacity = u.uOpacity.value;   // slider shows 25 % max -> demon renders at 12.5 %
   S.demonPos = [Math.round(x), Math.round(y)];
   // caption: shown while the line is spoken, left of the slider/icon column
   const ct = tt - D.capT;
@@ -884,7 +915,7 @@ async function selectDemon(i) {
   const bar = $('#demonBar');
   for (let i = 1; i <= 10; i++) {
     const b = document.createElement('button'); b.dataset.i = i; b.setAttribute('aria-label', 'Demon ' + i);
-    b.innerHTML = `<img src="demons/t${i}.png?v=4" alt="" draggable="false">`;
+    b.innerHTML = `<img src="demons/t${i}.png?v=5" alt="" draggable="false">`;
     b.addEventListener('click', e => { e.preventDefault(); selectDemon(i); });
     bar.appendChild(b);
   }

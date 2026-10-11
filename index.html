@@ -9,7 +9,7 @@
 <title>An Insight for Renee</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&family=Creepster&family=Quicksand:wght@500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%E2%9C%A6%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -69,11 +69,12 @@
 </div>
 
 <div id="flash" class="flash"></div>
-<button id="flashBtn" type="button" class="flash-btn hidden" aria-label="Flash" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="currentColor"/></svg><span id="flashLabel">FLASH OFF</span></button>
+<button id="flashBtn" type="button" class="flash-btn hidden" aria-label="Flash" aria-pressed="false"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7z" fill="currentColor"/></svg><span id="flashLabel">FLASH OFF</span><span class="ver">v5</span></button>
 <div id="flashState" class="flash-state"></div>
 <div id="fillRing" class="fill-ring"></div>
 <div id="volPrompt" class="vol-prompt hidden">turn up your volume</div>
 <div id="screenFlash" class="screen-flash"></div>
-<script type="module" src="app.js?v=4"></script>
+<div id="flashToast" class="flash-toast hidden" role="status"></div>
+<script type="module" src="app.js?v=5"></script>
 </body>
 </html>

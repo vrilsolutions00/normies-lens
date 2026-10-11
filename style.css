@@ -5,7 +5,7 @@ html,body{margin:0;height:100%;background:var(--plum);overflow:hidden;overscroll
 #gl{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;display:block}
 #video{position:fixed;width:2px;height:2px;opacity:0;pointer-events:none;left:0;top:0}
 .hidden{display:none!important}
-#ui{position:fixed;inset:0;pointer-events:none}
+#ui{position:fixed;inset:0;pointer-events:none;z-index:3}
 #ui button,#ui .pill{pointer-events:auto}
 .top{position:absolute;top:calc(env(safe-area-inset-top) + 14px);left:0;right:0;display:flex;justify-content:center;align-items:center}
 .pill{border:1px solid rgba(243,217,160,.45);background:rgba(40,26,60,.38);
@@ -48,15 +48,15 @@ h1{font:500 38px/1.08 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing
 .icon.small.left{right:auto;left:16px}
 
 /* flash */
-.flash-btn{position:fixed;left:12px;top:calc(env(safe-area-inset-top) + 12px);z-index:2147483000;pointer-events:auto;min-width:112px;height:44px;padding:0 14px 0 11px;
+.flash-btn{position:fixed;left:max(14px,env(safe-area-inset-left));bottom:calc(env(safe-area-inset-bottom) + 128px);z-index:2147483000;pointer-events:auto;min-width:140px;min-height:54px;padding:0 16px 0 13px;
   border-radius:999px;display:flex;align-items:center;gap:6px;font:700 12px Quicksand,sans-serif;letter-spacing:.06em;color:#fff8ef;
   background:rgba(25,16,40,.82);border:1.5px solid rgba(255,248,239,.55);touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;-webkit-user-select:none;user-select:none}
 .flash-btn *{pointer-events:none}
 .flash-btn.on{color:#2a1d10;background:#ffe14d;border-color:#fff;box-shadow:0 0 0 2px #fff7c2}
-.flash-state{position:fixed;left:14px;top:calc(env(safe-area-inset-top) + 60px);z-index:2147483000;pointer-events:none;font:700 11px Quicksand,sans-serif;color:#ffe14d;text-shadow:0 1px 2px #000}
-.screen-flash{position:fixed;inset:0;background:#fffaf0;opacity:0;visibility:hidden;pointer-events:none;z-index:2147483647;transition:none}
+.flash-state{position:fixed;left:18px;bottom:calc(env(safe-area-inset-bottom) + 190px);z-index:2147483000;pointer-events:none;font:700 11px Quicksand,sans-serif;color:#ffe14d;text-shadow:0 1px 2px #000}
+.screen-flash{position:fixed;inset:0;background:#fff;opacity:0;visibility:hidden;pointer-events:none;z-index:2147483647;transition:none}
 .screen-flash.on{opacity:1;visibility:visible}
-.fill-ring{position:fixed;inset:0;pointer-events:none;z-index:4;display:none;border:22px solid #fffdf6}
+.fill-ring{position:fixed;inset:0;pointer-events:none;z-index:1;display:none;border:46px solid #fff;border-radius:0}
 .fill-ring.on{display:block}
 /* demons */
 .demon-bar{position:absolute;right:8px;top:calc(env(safe-area-inset-top) + 66px);bottom:calc(env(safe-area-inset-bottom) + 128px);width:48px;
@@ -87,3 +87,10 @@ h1{font:500 38px/1.08 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing
 @keyframes volOut{from{opacity:1}to{opacity:0}}
 @keyframes volIn{to{opacity:1}}
 @keyframes flick{0%,100%{filter:none}8%{filter:brightness(.55)}10%{filter:none}47%{filter:brightness(.7)}49%{filter:none}}
+
+.flash-btn .ver{font-size:9px;opacity:.6;margin-left:4px}
+.flash-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 214px);z-index:2147483001;pointer-events:none;
+  max-width:86vw;padding:10px 14px;border-radius:14px;background:rgba(20,14,32,.92);color:#fff8ef;font:600 13px/1.3 Quicksand,sans-serif;text-align:center;opacity:0;transition:opacity .2s}
+.flash-toast.show{opacity:1}
+.flash-btn{border-radius:18px}
+.flash-btn::after{content:"";position:absolute;inset:-14px -14px -14px -10px}   /* invisible 14px hit-slop around the button */

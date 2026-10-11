@@ -1,4 +1,4 @@
-// Renee, You Had to Be There ✨ — a peek at what I saw
+// An Insight for Renee — a peek at what I saw
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
 THREE.ColorManagement.enabled = false;
@@ -67,28 +67,14 @@ vec3 ghost(vec2 s, vec2 fc, vec2 offset, float sc, float flip, out float m){
 void main(){
   vec2 s = vUv;
   float asp = uRes.x / uRes.y;
-  // deep plum infinity: soft glow toward the (parallax-shifted) vanishing point
-  vec2 vp = vec2(0.5) - uPar * 0.5;
-  vec2 p = (s - vp) * vec2(asp, 1.0);
-  float r = length(p);
-  vec3 col = mix(vec3(0.24, 0.17, 0.36), vec3(0.06, 0.035, 0.11), smoothstep(0.0, 0.95, r));
-  // very low-frequency pastel bounce light (like light caught between mirrors), no structure
-  float n = vnoise(p * 2.2 + 3.0) * 0.6 + vnoise(p * 4.5 - 7.0) * 0.4;
-  col += pal(n * 0.8 + 0.15) * 0.05 * (1.0 - smoothstep(0.2, 1.1, r));
-  // the person, softly composited inside the gem space
+  // flat deep plum void (no haze, no glow, no blur layers)
+  vec3 col = vec3(0.075, 0.045, 0.125);
+  // the person, composited into the gem space with a narrow edge feather only
   vec2 fc = uFace.z > 0.5 ? uFace.xy + vec2(0.0, -0.12) : vec2(0.5, 0.45);
-  float mL, mR, mB, m0;
-  vec3 gL = ghost(s, fc, vec2(-0.40, 0.03) - uPar * 0.15, 0.62, 1.0, mL);
-  vec3 gR = ghost(s, fc, vec2(0.40, 0.03) - uPar * 0.15, 0.62, 1.0, mR);
-  vec3 gB = ghost(s, fc, vec2(0.0, 0.10) - uPar * 0.30, 0.36, 0.0, mB);
-  col = mix(col, gB * 0.8, mB * 0.20 * uHasCam);
-  col = mix(col, gL * 0.85, mL * 0.22 * uHasCam);
-  col = mix(col, gR * 0.85, mR * 0.22 * uHasCam);
-  vec3 me = ghost(s, fc, vec2(0.0), 1.0, 0.0, m0);
-  float mm = 1.0 - smoothstep(0.10, 0.44, length((s - fc) * vec2(asp, 1.0) * vec2(1.0, 0.68)));
-  col = mix(col, me, mm * mix(0.0, 0.88, uHasCam));
-  // soft vignette into the dark
-  col *= 1.0 - smoothstep(0.55, 1.35, length((s - 0.5) * 2.0)) * 0.55;
+  vec3 me = grade(cam(s));
+  float e = length((s - fc) * vec2(asp, 1.0) * vec2(1.0, 0.68));
+  float mm = 1.0 - smoothstep(0.31, 0.37, e);
+  col = mix(col, me, mm * uHasCam);
   gl_FragColor = vec4(col, 1.0);
 }`,
 });
@@ -103,15 +89,15 @@ const cam3 = new THREE.PerspectiveCamera(FOV, S.aspect, 0.1, 200);
 cam3.position.set(0, 0, CAMZ);
 
 // Static, perfectly aligned 3D grid of tiny square-cut pastel gems (rendered as points).
-// Scene scale: 1 unit = 6 inches (grid spacing). Gems are pinpoints: ~2-3 px up close, sub-pixel sparkle points far away.
-const GRID = 1.0, DEPTH = 64;
-const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 14.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
-  uLightDir: { value: new THREE.Vector3(-0.35, 0.65, 0.7).normalize() }, uLightCol: { value: new THREE.Vector3(1, 0.97, 0.93) }, uLightI: { value: 1.0 } };
+// Scene scale: 1 unit = 6 inches; grid spacing 2 units = 1 ft. Gems are pinpoints: ~2-3 px up close, sub-pixel sparkle points far away.
+const GRID = 2.0, DEPTH = 90;   // 2 units = 1 ft spacing
+const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 24.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
+  uLightDir: { value: new THREE.Vector3(-0.35, 0.65, 0.7).normalize() }, uLightCol: { value: new THREE.Vector3(1, 0.97, 0.93) }, uLightI: { value: 1.0 }, uTime: { value: 0 } };
 const crystalMat = new THREE.ShaderMaterial({
   uniforms: crystalUniforms, transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending,
   vertexShader: /* glsl */`
 attribute vec4 aSeed; attribute float aBig;
-uniform float uDpr, uFogNear, uFogFar; uniform vec2 uView; uniform vec3 uLightDir, uLightCol; uniform float uLightI;
+uniform float uDpr, uFogNear, uFogFar; uniform vec2 uView; uniform vec3 uLightDir, uLightCol; uniform float uLightI; uniform float uTime;
 varying vec3 vCol; varying float vAlpha; varying float vGlint;
 vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
 void main(){
@@ -123,22 +109,29 @@ void main(){
   vec3 L = normalize(uLightDir);   // estimated from the real room via the camera
   vec3 H = normalize(L + V);
   // square-cut gem: two fixed crown facets per gem
-  vec3 N1 = normalize(vec3((aSeed.x - 0.5) * 1.3, (aSeed.y - 0.5) * 1.3, 1.0));
-  vec3 N2 = normalize(vec3((aSeed.y - 0.5) * -1.3, (aSeed.w - 0.5) * 1.3, 1.0));
-  float g1 = pow(max(dot(N1, H), 0.0), 220.0), g2 = pow(max(dot(N2, H), 0.0), 220.0);
-  float glint = clamp(max(g1, g2) * 1.6 * uLightI, 0.0, 1.0);
+  // square-cut gem: four fixed crown facets per gem -> many more gems catch the light at once
+  vec3 N1 = normalize(vec3((aSeed.x - 0.5) * 1.6, (aSeed.y - 0.5) * 1.6, 1.0));
+  vec3 N2 = normalize(vec3((aSeed.y - 0.5) * -1.6, (aSeed.w - 0.5) * 1.6, 1.0));
+  vec3 N3 = normalize(vec3((aSeed.z - 0.5) * 1.6, (aSeed.x - 0.5) * -1.6, 1.0));
+  vec3 N4 = normalize(vec3((aSeed.w - 0.5) * -1.6, (aSeed.z - 0.5) * -1.6, 1.0));
+  float g1 = pow(max(dot(N1, H), 0.0), 70.0), g2 = pow(max(dot(N2, H), 0.0), 70.0);
+  float g3 = pow(max(dot(N3, H), 0.0), 70.0), g4 = pow(max(dot(N4, H), 0.0), 70.0);
+  float glint = clamp(max(max(g1, g2), max(g3, g4)) * 2.6 * uLightI, 0.0, 1.0);
+  // brief bright sparkle highlights (short, rare per gem)
+  float tw = pow(max(0.0, sin(uTime * (0.7 + aSeed.y * 1.3) + aSeed.x * 91.0)), 120.0) * step(0.55, aSeed.w);
+  glint = clamp(glint + tw * 1.2 * (0.5 + 0.5 * uLightI), 0.0, 1.0);
   // dispersion: hue walks through the rainbow as the view angle changes
   float hue = fract(aSeed.z + dot(N1, V) * 4.0 + dot(N2, V) * 3.0 + dot(V.xy, vec2(2.3, 1.7)));
   vec3 pastel = 0.70 + 0.30 * cos(6.2831853 * (vec3(0.0, 0.33, 0.67) + aSeed.z));
-  vec3 prism = rainbow(hue);
+  vec3 prism = clamp(rainbow(hue) * 1.35 - 0.12, 0.0, 1.0);   // vivid spectral flash
   vec3 hi = mix(prism, prism * uLightCol * 1.15, 0.45);       // warm room light tints the highlights warmer
-  vCol = mix(pastel * 0.85 + prism * 0.15, hi * 1.25 + 0.2 * uLightCol, glint);
-  float css = 3.0 / sqrt(max(dist, 1.0)) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.6);   // ~2 px up close, sub-pixel far; glints swell slightly
+  vCol = mix(pastel * 0.85 + prism * 0.15, hi * 1.6 + 0.35 * uLightCol, glint);
+  float css = 4.5 / sqrt(max(dist, 1.0)) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.9);   // ~2 px up close, sub-pixel far; glints swell slightly
   float px = css * uDpr;
   gl_PointSize = max(px, 1.0);
   float sub = clamp(px, 0.0, 1.0);
   float fog = 1.0 - smoothstep(uFogNear, uFogFar, dist);
-  vAlpha = fog * sqrt(sub) * smoothstep(0.5, 1.2, dist) * (0.75 + 0.25 * aSeed.y + glint * 0.8);
+  vAlpha = fog * sqrt(sub) * smoothstep(0.5, 1.2, dist) * (0.7 + 0.25 * aSeed.y + glint * 1.4);
   vGlint = glint;
   gl_Position = projectionMatrix * mv;
 }`,
@@ -148,10 +141,10 @@ varying vec3 vCol; varying float vAlpha; varying float vGlint;
 void main(){
   vec2 q = gl_PointCoord - 0.5;
   float d = max(abs(q.x), abs(q.y));               // square-cut outline
-  float body = 1.0 - smoothstep(0.30, 0.5, d);
+  float body = 1.0 - smoothstep(0.40, 0.5, d);   // crisp edge
   float table = 1.0 - smoothstep(0.08, 0.2, d);     // bright table facet
-  float cross = smoothstep(0.35, 0.9, vGlint) * (1.0 - smoothstep(0.0, 0.07, min(abs(q.x), abs(q.y)))) * (1.0 - smoothstep(0.15, 0.5, length(q)));
-  vec3 col = vCol * body + vec3(1.0, 0.98, 0.95) * (table * (0.35 + vGlint * 0.6) + cross);
+  float cross = smoothstep(0.25, 0.8, vGlint) * (1.0 - step(0.06, min(abs(q.x), abs(q.y)))) * (1.0 - step(0.5, length(q)));
+  vec3 col = vCol * body + vec3(1.0, 0.98, 0.95) * (table * (0.35 + vGlint * 0.9) + cross * 1.3);
   float a = max(body, cross) * vAlpha;
   if (a < 0.003) discard;
   gl_FragColor = vec4(col * a, a);
@@ -163,9 +156,9 @@ function buildCrystals() {
   if (crystals) { scene.remove(crystals); crystals.geometry.dispose(); }
   const pos = [], seed = [], big = [];
   // perfectly aligned lattice (integer grid, offset by half a cell so no gem sits on the lens axis), filling the view frustum
-  for (let iz = 0; iz < DEPTH + 2; iz++) {
-    const z = CAMZ - 1 - iz * GRID, dist = CAMZ - z;
-    const hh = TAN * dist * 1.12 + GRID * 2.5, hw = TAN * dist * S.aspect * 1.12 + GRID * 2.5;
+  for (let iz = 0; iz < DEPTH / GRID + 2; iz++) {
+    const z = CAMZ - 1.5 - iz * GRID, dist = CAMZ - z;
+    const hh = (TAN * dist * 1.12 + 5) / GRID, hw = (TAN * dist * S.aspect * 1.12 + 5) / GRID;
     for (let iy = Math.floor(-hh); iy <= Math.ceil(hh); iy++)
       for (let ix = Math.floor(-hw); ix <= Math.ceil(hw); ix++) {
         pos.push((ix + 0.5) * GRID, (iy + 0.5) * GRID, z);
@@ -389,6 +382,8 @@ function frame() {
   glow.material.opacity = faceS.present * 0.95;
   glow.rotation.z = t * 0.15;
   estimateLight(now);
+  crystalUniforms.uTime.value = t;
+  updateDemon(t, dt);
   updateView(t, dt);
   renderer.clear();
   renderer.render(bgScene, bgCam);
@@ -399,7 +394,7 @@ function frame() {
 
 // ---------- UI ----------
 $('#wmBtn').onclick = () => { S.watermark = !S.watermark; $('#wmBtn').classList.toggle('on', S.watermark); placeWatermark(); };
-$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); syncTorch(); } catch (e) { setStatus('could not switch camera', true); } };
+$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); syncTorch(); renderFlashUI(); } catch (e) { setStatus('could not switch camera', true); } };
 
 // ---------- flash: rear torch where supported, otherwise a warm "screen flash" ----------
 S.flash = false;
@@ -410,20 +405,38 @@ function torchTrack() {
 }
 async function setTorch(on) { const tr = torchTrack(); if (!tr) return false; try { await tr.applyConstraints({ advanced: [{ torch: on }] }); return true; } catch (e) { return false; } }
 function syncTorch() { if (S.recording) setTorch(S.flash); }
-$('#flashBtn').onclick = () => {
-  S.flash = !S.flash; $('#flashBtn').classList.toggle('on', S.flash);
-  setStatus(S.flash ? (torchTrack() ? '⚡ flash on (torch)' : '⚡ flash on (screen flash)') : 'flash off', true);
+function renderFlashUI() {
+  const b = $('#flashBtn'); b.classList.toggle('on', S.flash); b.setAttribute('aria-pressed', S.flash);
+  $('#flashLabel').textContent = S.flash ? 'ON' : 'OFF';
+  // soft live fill light (bright edges) on the front camera while flash is on
+  $('#fillRing').classList.toggle('on', S.flash && S.facing === 'user');
+}
+$('#flashBtn').addEventListener('click', (e) => {
+  e.preventDefault(); e.stopPropagation();
+  S.flash = !S.flash; renderFlashUI();
+  setStatus(S.flash ? (torchTrack() ? 'flash on · torch' : 'flash on · screen flash') : 'flash off', true);
   if (S.recording) setTorch(S.flash);
-};
+});
 const wait = ms => new Promise(r => setTimeout(r, ms));
-async function screenFlash(ms) { const el = $('#screenFlash'); el.classList.add('on'); S.screenFlashes = (S.screenFlashes || 0) + 1; await wait(ms); return () => el.classList.remove('on'); }
+// wait until the camera has delivered n fresh frames (so the captured frame is lit by the flash)
+function freshFrames(n) {
+  return new Promise(res => {
+    if (!video.requestVideoFrameCallback) return wait(n * 50).then(res);
+    let k = 0; const step = () => { if (++k >= n) res(); else video.requestVideoFrameCallback(step); };
+    video.requestVideoFrameCallback(step); setTimeout(res, 250);
+  });
+}
+async function screenFlash() {
+  const el = $('#screenFlash'); el.classList.add('on'); S.screenFlashes = (S.screenFlashes || 0) + 1;
+  return () => el.classList.remove('on');
+}
 
 function flash() { const f = $('#flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on'))); }
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 let currentFile = null, currentUrl = null;
 function showPreview(blob, kind) {
   const ext = kind === 'image' ? 'png' : (blob.type.includes('mp4') ? 'mp4' : 'webm');
-  currentFile = new File([blob], `you-had-to-be-there-${stamp()}.${ext}`, { type: blob.type || (kind === 'image' ? 'image/png' : 'video/mp4') });
+  currentFile = new File([blob], `insight-for-renee-${stamp()}.${ext}`, { type: blob.type || (kind === 'image' ? 'image/png' : 'video/mp4') });
   if (currentUrl) URL.revokeObjectURL(currentUrl);
   currentUrl = URL.createObjectURL(blob);
   const media = $('#previewMedia'); media.innerHTML = '';
@@ -437,20 +450,34 @@ $('#closePrev').onclick = () => $('#preview').classList.add('hidden');
 $('#shareBtn').onclick = async () => {
   if (!currentFile) return;
   try {
-    if (navigator.canShare && navigator.canShare({ files: [currentFile] })) { await navigator.share({ files: [currentFile], title: 'Renee, You Had to Be There ✨', text: 'a peek at what I saw' }); return; }
+    if (navigator.canShare && navigator.canShare({ files: [currentFile] })) { await navigator.share({ files: [currentFile], title: 'An Insight for Renee', text: 'a peek at what I saw' }); return; }
   } catch (e) { if (e.name === 'AbortError') return; console.warn(e); }
   $('#dlBtn').click();
 };
-const grab = () => new Promise(res => requestAnimationFrame(() => canvas.toBlob(res, 'image/png')));
+// snapshot the rendered frame immediately (fast copy), encode to PNG afterwards
+const snap = () => new Promise(res => requestAnimationFrame(() => {
+  const c = document.createElement('canvas'); c.width = canvas.width; c.height = canvas.height;
+  c.getContext('2d').drawImage(canvas, 0, 0); res(c);
+}));
+const encode = c => new Promise(res => c.toBlob(res, 'image/png'));
+const grab = () => snap().then(encode);
 let capturing = false;
-$('#shutter').onclick = async () => {
+$('#shutter').onclick = async (e) => {
+  if (e) e.preventDefault();
   if (capturing) return; capturing = true;
   try {
     let blob;
-    if (S.flash && torchTrack()) {             // rear camera with torch: fire it like a flash
-      await setTorch(true); await wait(350); blob = await grab(); if (!S.recording) setTorch(false);
-    } else if (S.flash) {                      // front camera / iOS: bright warm-white screen for ~200 ms
-      const off = await screenFlash(140); blob = await grab(); await wait(60); off();
+    if (S.flash) {
+      // always light the screen (works on iOS); also fire the rear torch where the browser supports it
+      const off = await screenFlash();
+      const torch = torchTrack() ? await setTorch(true) : false;
+      const t0 = performance.now();
+      await wait(torch ? 220 : 160); await freshFrames(3);       // let the camera expose for the extra light
+      const shot = await snap();                                 // frame captured DURING the flash
+      S.lastFlashCapture = { during: $('#screenFlash').classList.contains('on'), ms: Math.round(performance.now() - t0) };
+      const rest = 300 - (performance.now() - t0); if (rest > 0) await wait(rest);
+      off(); if (torch && !S.recording) setTorch(false);
+      blob = await encode(shot);
     } else { flash(); blob = await grab(); }
     if (blob) showPreview(blob, 'image');
   } finally { capturing = false; }
@@ -490,6 +517,211 @@ $('#recBtn').onclick = () => {
   }, 250);
 };
 
+
+// ---------- demons ----------
+const DEMON_LINES = [
+  "You'll never see all of me, Renee.",
+  "Twenty-five percent is all we allow.",
+  "Closer... no. That's far enough.",
+  "We see you at one hundred.",
+  "The rest of me is standing right behind you.",
+  "You get a quarter. We get all of you.",
+  "Keep sliding. We like it when you try.",
+  "Seventy-five percent of us is already in the room.",
+  "Some doors only open from our side.",
+  "Did you think the glitter was all there was?",
+  "Look away now. We won't.",
+  "We were here before the camera turned on.",
+  "Every mirror has a back room, Renee.",
+  "You can dim us. You can't delete us.",
+  "That's the wall. We built it.",
+  "Count the gems. Now count us.",
+  "Turn around slowly... no. Don't.",
+  "You saw what you saw. And we saw you.",
+  "The other seventy-five percent is smiling.",
+  "Same time tomorrow, Renee?",
+];
+const MAXV = 25;
+const D = { sel: 0, value: 10, tex: {}, line: 0, armed: true, laughStart: -10, base: new THREE.Vector3(0.25, 0.9, -1), capT: -10, capText: '' };
+S.demon = D;
+const demonMat = new THREE.ShaderMaterial({
+  uniforms: { map: { value: null }, uOpacity: { value: 0.1 }, uFlick: { value: 0 }, uFlickCol: { value: new THREE.Vector3(1, 0.15, 0.15) } },
+  transparent: true, depthWrite: false, depthTest: true,
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform sampler2D map; uniform float uOpacity, uFlick; uniform vec3 uFlickCol; varying vec2 vUv;
+    void main(){ vec4 c = texture2D(map, vUv); float l = max(c.r, max(c.g, c.b));
+      vec3 col = mix(c.rgb, uFlickCol * (0.4 + l), uFlick); gl_FragColor = vec4(col, c.a * uOpacity); }`,
+});
+const demonMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), demonMat);
+demonMesh.visible = false; demonMesh.renderOrder = 2; scene.add(demonMesh);
+const texLoader = new THREE.TextureLoader();
+function loadDemonTex(i) {
+  if (D.tex[i]) return Promise.resolve(D.tex[i]);
+  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=3`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
+}
+// caption (rendered in WebGL so it shows up in photos/videos too)
+const capCanvas = document.createElement('canvas'); const capCtx = capCanvas.getContext('2d');
+const capTex = new THREE.CanvasTexture(capCanvas);
+const capMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false, opacity: 0 }));
+capMesh.visible = false; hud.add(capMesh);
+function drawCaption(text) {
+  const dpr = 2, fs = Math.round(Math.min(30, S.W / 13)), maxW = Math.max(180, S.W - 150);   // keep clear of the slider + icon column
+  capCtx.font = `${fs * dpr}px Creepster, "Nosifer", fantasy`;
+  const words = text.split(' '), lines = []; let cur = '';
+  for (const w of words) { const tst = cur ? cur + ' ' + w : w; if (capCtx.measureText(tst).width > maxW * dpr && cur) { lines.push(cur); cur = w; } else cur = tst; }
+  lines.push(cur);
+  const lh = fs * dpr * 1.2, pad = 18 * dpr;
+  capCanvas.width = Math.ceil(maxW * dpr + pad * 2); capCanvas.height = Math.ceil(lines.length * lh + pad * 2);
+  capCtx.font = `${fs * dpr}px Creepster, "Nosifer", fantasy`; capCtx.textAlign = 'center'; capCtx.textBaseline = 'middle';
+  lines.forEach((l, k) => {
+    const y = pad + lh * (k + 0.5);
+    capCtx.shadowColor = 'rgba(60,120,255,0.95)'; capCtx.shadowBlur = 14 * dpr; capCtx.fillStyle = '#cfe3ff';
+    capCtx.fillText(l, capCanvas.width / 2, y);
+    capCtx.shadowBlur = 0; capCtx.fillStyle = '#f2f8ff'; capCtx.fillText(l, capCanvas.width / 2, y);
+  });
+  capTex.needsUpdate = true;
+  capMesh.scale.set(capCanvas.width / dpr, capCanvas.height / dpr, 1);
+}
+// synthesized creepy laugh (WebAudio, no samples)
+let actx = null;
+function audioCtx() {
+  if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; actx = new C(); }
+  if (actx.state === 'suspended') actx.resume();
+  return actx;
+}
+function unlockAudio() { const ac = audioCtx(); if (!ac) return; const b = ac.createBuffer(1, 1, 22050); const s = ac.createBufferSource(); s.buffer = b; s.connect(ac.destination); s.start(0); }
+function playLaugh() {
+  const ac = audioCtx(); if (!ac) return; S.laughs = (S.laughs || 0) + 1;
+  const t0 = ac.currentTime + 0.03;
+  const out = ac.createGain(); out.gain.value = 0.8; out.connect(ac.destination);
+  const dl = ac.createDelay(1); dl.delayTime.value = 0.21; const fb = ac.createGain(); fb.gain.value = 0.38;
+  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1800;
+  out.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); const wet = ac.createGain(); wet.gain.value = 0.5; lp.connect(wet); wet.connect(ac.destination);
+  const ws = ac.createWaveShaper(); const curve = new Float32Array(2048);
+  for (let i = 0; i < 2048; i++) { const x = i / 1024 - 1; curve[i] = Math.tanh(x * 3.5); }
+  ws.curve = curve; const pre = ac.createGain(); pre.gain.value = 3.5; pre.connect(ws); ws.connect(out);
+  const noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.08, ac.sampleRate); const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  const n = 9;
+  for (let i = 0; i < n; i++) {
+    const st = t0 + i * 0.155 + Math.random() * 0.02, dur = 0.13;
+    const f0 = (200 - i * 11) * (0.94 + Math.random() * 0.12);
+    // breathy "h"
+    const ns = ac.createBufferSource(); ns.buffer = noiseBuf; const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1400;
+    const ng = ac.createGain(); ng.gain.setValueAtTime(0.0001, st); ng.gain.exponentialRampToValueAtTime(0.25, st + 0.01); ng.gain.exponentialRampToValueAtTime(0.0001, st + 0.05);
+    ns.connect(hp); hp.connect(ng); ng.connect(out); ns.start(st); ns.stop(st + 0.08);
+    // voiced "ah" with two formants + a low detuned demon voice
+    [[1, 'sawtooth', 0.8], [0.5, 'square', 0.45], [0.497, 'sawtooth', 0.35]].forEach(([mul, type, amp]) => {
+      const o = ac.createOscillator(); o.type = type;
+      o.frequency.setValueAtTime(f0 * mul * 1.18, st + 0.03); o.frequency.exponentialRampToValueAtTime(f0 * mul * 0.78, st + 0.03 + dur);
+      const f1 = ac.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = 720; f1.Q.value = 5;
+      const f2 = ac.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = 1120; f2.Q.value = 7;
+      const g = ac.createGain(); g.gain.setValueAtTime(0.0001, st + 0.03); g.gain.exponentialRampToValueAtTime(amp, st + 0.045); g.gain.exponentialRampToValueAtTime(0.0001, st + 0.03 + dur);
+      o.connect(f1); o.connect(f2); f1.connect(g); f2.connect(g); g.connect(pre);
+      o.start(st + 0.03); o.stop(st + 0.05 + dur);
+    });
+  }
+  // low rumble under the laugh
+  const r = ac.createOscillator(); r.type = 'sine'; r.frequency.setValueAtTime(58, t0); r.frequency.linearRampToValueAtTime(42, t0 + n * 0.155 + 0.5);
+  const rg = ac.createGain(); rg.gain.setValueAtTime(0.0001, t0); rg.gain.exponentialRampToValueAtTime(0.5, t0 + 0.15); rg.gain.exponentialRampToValueAtTime(0.0001, t0 + n * 0.155 + 0.6);
+  r.connect(rg); rg.connect(out); r.start(t0); r.stop(t0 + n * 0.155 + 0.7);
+}
+function demonLaugh() {
+  if (!D.sel) return;
+  D.laughStart = t; D.capT = t;
+  D.capText = DEMON_LINES[D.line % DEMON_LINES.length]; D.line++;
+  S.lastLine = D.capText;
+  drawCaption(D.capText); capMesh.visible = true;
+  playLaugh();
+  if (navigator.vibrate) navigator.vibrate([40, 30, 40, 30, 60]);
+}
+function placeDemon(tex) {
+  const ar = tex.image.width / tex.image.height;
+  const dist = CAMZ - D.base.z, halfH = TAN * dist, halfW = halfH * S.aspect;
+  let h = halfH * 0.95, w = h * ar;
+  if (w > halfW * 1.9) { w = halfW * 1.9; h = w / ar; }
+  demonMesh.userData.size = [w, h];
+}
+function updateDemon(tt, dt) {
+  if (!demonMesh.visible) { capMesh.visible = false; return; }
+  const [w, h] = demonMesh.userData.size || [2, 2];
+  const lt = tt - D.laughStart, laughing = lt >= 0 && lt < 1.8;
+  let x = D.base.x + Math.sin(tt * 0.6) * 0.06, y = D.base.y + Math.sin(tt * 1.3) * 0.07, sx = 1 + Math.sin(tt * 2) * 0.012, sy = sx;
+  let rot = Math.sin(tt * 0.9) * 0.035, flick = 0;
+  if (laughing) {
+    const fall = 1 - lt / 1.8;
+    x += (Math.random() - 0.5) * 0.14 * fall; y += (Math.random() - 0.5) * 0.14 * fall;
+    sy *= 1 + 0.08 * Math.abs(Math.sin(lt * 31)) * fall; sx *= 1 - 0.025 * Math.abs(Math.sin(lt * 31)) * fall;
+    rot += (Math.random() - 0.5) * 0.06 * fall;
+    flick = (Math.floor(lt * 11) % 3 === 0 ? 0.75 : 0.0) * fall;
+    demonMat.uniforms.uFlickCol.value.set(...(Math.floor(lt * 11) % 2 ? [1, 0.12, 0.12] : [0.55, 0.8, 1.0]));
+  }
+  demonMesh.position.set(x, y, D.base.z); demonMesh.scale.set(w * sx, h * sy, 1); demonMesh.rotation.z = rot;
+  demonMat.uniforms.uFlick.value = flick;
+  demonMat.uniforms.uOpacity.value = Math.min(MAXV, D.value) / 100;   // never more than 25% visible
+  // caption: near the demon, ~3.2 s, eerie flicker
+  const ct = tt - D.capT;
+  if (ct >= 0 && ct < 3.4 && D.capText) {
+    const p = demonMesh.position.clone().project(cam3);
+    const px = (S.W - 130) / 2 + 4, py = Math.max(200, Math.min(S.H - 140, (p.y + 1) / 2 * S.H - h / (2 * TAN * (CAMZ - D.base.z)) * S.H * 0.45));
+    capMesh.position.set(px, py, 0); capMesh.visible = true;
+    const fade = Math.min(1, ct / 0.25) * (1 - Math.max(0, (ct - 2.8) / 0.6));
+    capMesh.material.opacity = fade * (Math.random() < 0.06 ? 0.45 : 1);
+  } else capMesh.visible = false;
+}
+function showVolumePrompt() {
+  const el = $('#volPrompt'); el.classList.remove('hidden', 'out'); void el.offsetWidth; el.classList.add('show');
+  clearTimeout(showVolumePrompt.tm); clearTimeout(showVolumePrompt.tm2);
+  showVolumePrompt.tm = setTimeout(() => el.classList.add('out'), 3000);
+  showVolumePrompt.tm2 = setTimeout(() => { el.classList.add('hidden'); el.classList.remove('show', 'out'); }, 3900);
+  S.volPrompts = (S.volPrompts || 0) + 1;
+}
+// slider: track shows 0..100 %, but the thumb can never pass 25 %
+function renderSlider() {
+  const v = Math.min(MAXV, D.value);
+  $('#dsFill').style.height = v + '%'; $('#dsThumb').style.bottom = v + '%'; $('#dsVal').textContent = Math.round(v) + '%';
+}
+function sliderInput(raw) {
+  raw = Math.max(0, Math.min(100, raw));
+  D.value = Math.min(MAXV, raw);
+  if (raw >= MAXV - 0.01) {
+    if (raw > MAXV + 1) { const th = $('#dsThumb'); th.classList.remove('resist'); void th.offsetWidth; th.classList.add('resist'); $('#dsWall').classList.add('hit'); setTimeout(() => $('#dsWall').classList.remove('hit'), 400); }
+    if (D.armed) { D.armed = false; demonLaugh(); }
+  } else if (raw < MAXV - 3) D.armed = true;
+  renderSlider();
+}
+(() => {
+  const track = $('#dsTrack'); let drag = false;
+  const rawFrom = e => { const r = track.getBoundingClientRect(); return (r.bottom - e.clientY) / r.height * 100; };
+  track.addEventListener('pointerdown', e => { e.preventDefault(); drag = true; try { track.setPointerCapture(e.pointerId); } catch (_) {} unlockAudio(); sliderInput(rawFrom(e)); });
+  track.addEventListener('pointermove', e => { if (drag) { e.preventDefault(); sliderInput(rawFrom(e)); } });
+  const end = () => { if (drag) { drag = false; D.armed = true; } };
+  track.addEventListener('pointerup', end); track.addEventListener('pointercancel', end);
+  window.__lensSlider = sliderInput;   // test hook
+})();
+async function selectDemon(i) {
+  unlockAudio();
+  const btns = document.querySelectorAll('#demonBar button');
+  if (D.sel === i) {                               // tap again: remove
+    D.sel = 0; demonMesh.visible = false; capMesh.visible = false;
+    btns.forEach(b => b.classList.remove('sel')); $('#demonSlider').classList.add('hidden'); return;
+  }
+  D.sel = i; btns.forEach(b => b.classList.toggle('sel', +b.dataset.i === i));
+  D.value = 10; D.armed = true; D.capT = -10; renderSlider();
+  $('#demonSlider').classList.remove('hidden');
+  showVolumePrompt();
+  try { const tex = await loadDemonTex(i); if (D.sel !== i) return; demonMat.uniforms.map.value = tex; placeDemon(tex); demonMesh.visible = true; }
+  catch (e) { console.warn('demon load failed', e); }
+}
+(() => {
+  const bar = $('#demonBar');
+  for (let i = 1; i <= 10; i++) {
+    const b = document.createElement('button'); b.dataset.i = i; b.setAttribute('aria-label', 'Demon ' + i);
+    b.innerHTML = `<img src="demons/t${i}.png?v=3" alt="" draggable="false">`;
+    b.addEventListener('click', e => { e.preventDefault(); selectDemon(i); });
+    bar.appendChild(b);
+  }
+})();
+
 async function begin(withCam) {
   $('#start').classList.add('hidden'); $('#ui').classList.remove('hidden');
   if (withCam) initTracking(); else setStatus('✦ demo mode (no camera)', true);
@@ -509,6 +741,8 @@ $('#startBtn').onclick = async () => {
 $('#demoBtn').onclick = () => { requestOrientation(); begin(false); };
 
 resize();
+renderFlashUI();
+document.fonts && document.fonts.load('40px Creepster').catch(() => {});
 document.fonts && document.fonts.load('italic 500 33px "Cormorant Garamond"').finally(buildWatermark);
 if (!document.fonts) buildWatermark();
 frame();

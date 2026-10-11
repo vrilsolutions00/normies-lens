@@ -46,8 +46,42 @@ h1{font:500 38px/1.08 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing
 .flash.on{opacity:.75;transition:none}
 
 .icon.small.left{right:auto;left:16px}
-#flashBtn{color:rgba(255,248,239,.5)}
-#flashBtn.on{color:#fff1c9;text-shadow:0 0 10px #ffe7a8;border-color:#ffe7a8}
-.screen-flash{position:fixed;inset:0;background:#fff7ea;opacity:0;pointer-events:none;z-index:20}
-.screen-flash.on{opacity:1}
-h1 .spark{color:#fff;-webkit-text-fill-color:#fff}
+
+/* flash */
+.flash-btn{position:absolute;left:16px;height:38px;padding:0 12px 0 9px;border-radius:999px;display:flex;align-items:center;gap:5px;
+  font:700 12px Quicksand,sans-serif;letter-spacing:.08em;color:rgba(255,248,239,.6);background:rgba(40,26,60,.5);border:1px solid rgba(255,248,239,.3);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);touch-action:manipulation;cursor:pointer}
+.flash-btn.on{color:#2a1d10;background:#ffe9a8;border-color:#fff3c9;box-shadow:0 0 14px rgba(255,233,168,.8)}
+.screen-flash{position:fixed;inset:0;background:#fffaf0;opacity:0;visibility:hidden;pointer-events:none;z-index:2147483647;transition:none}
+.screen-flash.on{opacity:1;visibility:visible}
+.fill-ring{position:fixed;inset:0;pointer-events:none;z-index:5;display:none;border:16px solid rgba(255,250,240,.96);box-shadow:inset 0 0 0 6px rgba(255,250,240,.55)}
+.fill-ring.on{display:block}
+/* demons */
+.demon-bar{position:absolute;right:8px;top:calc(env(safe-area-inset-top) + 66px);bottom:calc(env(safe-area-inset-bottom) + 128px);width:48px;
+  overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column;align-items:center;gap:8px;padding:2px 0;pointer-events:auto;touch-action:pan-y;scrollbar-width:none}
+.demon-bar::-webkit-scrollbar{display:none}
+.demon-bar button{flex:0 0 auto;width:42px;height:42px;border-radius:50%;padding:0;overflow:hidden;background:#05060f;border:1.5px solid rgba(120,170,255,.45);box-shadow:0 0 8px rgba(60,120,255,.35);touch-action:manipulation}
+.demon-bar button img{width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+.demon-bar button.sel{border-color:#cfe3ff;box-shadow:0 0 0 2px rgba(120,170,255,.8),0 0 16px rgba(80,140,255,.9)}
+.dslider{position:absolute;right:66px;top:50%;transform:translateY(-50%);width:54px;height:290px;pointer-events:auto;display:flex;flex-direction:column;align-items:center}
+.ds-lbl{font:700 11px Quicksand,sans-serif;color:#dbe9ff;text-shadow:0 0 4px #000,0 0 6px rgba(60,120,255,.9);letter-spacing:.05em;height:16px}
+.ds-track{position:relative;width:26px;flex:1;margin:4px 0;border-radius:13px;background:rgba(10,12,30,.65);border:1px solid rgba(120,170,255,.4);touch-action:none;overflow:visible}
+.ds-locked{position:absolute;left:0;right:0;top:0;bottom:25%;border-radius:13px 13px 0 0;opacity:.55;
+  background:repeating-linear-gradient(135deg,rgba(120,140,190,.18) 0 4px,rgba(0,0,0,0) 4px 8px);display:flex;align-items:center;justify-content:center}
+.ds-locked span{font-size:11px;opacity:.6}
+.ds-wall{position:absolute;left:-5px;right:-5px;bottom:25%;height:2px;background:rgba(207,227,255,.55);border-radius:1px}
+.ds-wall.hit{background:#ff5b6e;box-shadow:0 0 8px #ff5b6e}
+.ds-fill{position:absolute;left:3px;right:3px;bottom:3px;border-radius:10px;background:linear-gradient(0deg,#2b5cff,#9cc3ff);max-height:calc(25% - 3px)}
+.ds-thumb{position:absolute;left:50%;width:30px;height:30px;margin:0 0 -15px -15px;border-radius:50%;background:radial-gradient(circle at 40% 35%,#f2f8ff,#7fa8ff 60%,#2e4fb8);
+  box-shadow:0 0 10px rgba(80,140,255,.9);pointer-events:none}
+.ds-thumb.resist{animation:resist .35s}
+@keyframes resist{0%,100%{transform:translateY(0)}20%{transform:translateY(-5px)}40%{transform:translateY(3px)}60%{transform:translateY(-3px)}80%{transform:translateY(1px)}}
+.ds-val{margin-top:4px;font:700 12px Quicksand,sans-serif;color:#cfe3ff;text-shadow:0 0 6px rgba(60,120,255,.9)}
+.vol-prompt{position:fixed;left:0;right:0;top:34%;text-align:center;z-index:30;pointer-events:none;padding:0 20px;
+  font:400 clamp(34px,11vw,56px)/1.05 Creepster,Nosifer,fantasy;color:#e6f0ff;letter-spacing:.04em;
+  text-shadow:0 0 6px #9cc3ff,0 0 18px #3d7bff,0 0 34px #1f4fd8;opacity:0}
+.vol-prompt.show{animation:volIn .5s forwards,flick 1.6s infinite}
+.vol-prompt.show.out{animation:volOut .9s forwards}
+@keyframes volOut{from{opacity:1}to{opacity:0}}
+@keyframes volIn{to{opacity:1}}
+@keyframes flick{0%,100%{filter:none}8%{filter:brightness(.55)}10%{filter:none}47%{filter:brightness(.7)}49%{filter:none}}

@@ -67,14 +67,8 @@ vec3 ghost(vec2 s, vec2 fc, vec2 offset, float sc, float flip, out float m){
 void main(){
   vec2 s = vUv;
   float asp = uRes.x / uRes.y;
-  // flat deep plum void (no haze, no glow, no blur layers)
-  vec3 col = vec3(0.075, 0.045, 0.125);
-  // the person, composited into the gem space with a narrow edge feather only
-  vec2 fc = uFace.z > 0.5 ? uFace.xy + vec2(0.0, -0.12) : vec2(0.5, 0.45);
-  vec3 me = grade(cam(s));
-  float e = length((s - fc) * vec2(asp, 1.0) * vec2(1.0, 0.68));
-  float mm = 1.0 - smoothstep(0.31, 0.37, e);
-  col = mix(col, me, mm * uHasCam);
+  // camera feed: full-screen, fully opaque, untouched colors (no grading, no mask, no vignette, no glow)
+  vec3 col = uHasCam > 0.5 ? texture2D(uCam, clamp(camUV(s), 0.0, 1.0)).rgb : vec3(0.075, 0.045, 0.125);
   gl_FragColor = vec4(col, 1.0);
 }`,
 });
@@ -84,21 +78,22 @@ bgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMat));
 
 // ---------- 3D crystal field ----------
 const scene = new THREE.Scene();
-const FOV = 50, CAMZ = 10, TAN = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+const FOV = 60, CAMZ = 10, TAN = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
 const cam3 = new THREE.PerspectiveCamera(FOV, S.aspect, 0.1, 200);
 cam3.position.set(0, 0, CAMZ);
 
 // Static, perfectly aligned 3D grid of tiny square-cut pastel gems (rendered as points).
-// Scene scale: 1 unit = 6 inches; grid spacing 2 units = 1 ft. Gems are pinpoints: ~2-3 px up close, sub-pixel sparkle points far away.
-const GRID = 2.0, DEPTH = 90;   // 2 units = 1 ft spacing
-const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 24.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
+// Scene scale: 1 unit = 6 inches; grid spacing 4 units = 2 ft. Gems are pinpoints: ~2-3 px up close, sub-pixel sparkle points far away.
+const GRID = 4.0, DEPTH = 130;   // 4 units = 2 ft spacing
+const crystalUniforms = { uDpr: { value: 1 }, uFogNear: { value: 40.0 }, uFogFar: { value: DEPTH }, uView: { value: new THREE.Vector2(0, 0) },
   uLightDir: { value: new THREE.Vector3(-0.35, 0.65, 0.7).normalize() }, uLightCol: { value: new THREE.Vector3(1, 0.97, 0.93) }, uLightI: { value: 1.0 }, uTime: { value: 0 } };
 const crystalMat = new THREE.ShaderMaterial({
-  uniforms: crystalUniforms, transparent: true, depthWrite: false, depthTest: true, blending: THREE.AdditiveBlending,
+  uniforms: crystalUniforms, transparent: true, depthWrite: false, depthTest: true,
+  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendEquation: THREE.AddEquation,   // premultiplied: crisp over the camera
   vertexShader: /* glsl */`
 attribute vec4 aSeed; attribute float aBig;
 uniform float uDpr, uFogNear, uFogFar; uniform vec2 uView; uniform vec3 uLightDir, uLightCol; uniform float uLightI; uniform float uTime;
-varying vec3 vCol; varying float vAlpha; varying float vGlint;
+varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail;
 vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
 void main(){
   // Gem positions never move. Only the light response changes with the viewing angle (uView).
@@ -126,28 +121,62 @@ void main(){
   vec3 prism = clamp(rainbow(hue) * 1.35 - 0.12, 0.0, 1.0);   // vivid spectral flash
   vec3 hi = mix(prism, prism * uLightCol * 1.15, 0.45);       // warm room light tints the highlights warmer
   vCol = mix(pastel * 0.85 + prism * 0.15, hi * 1.6 + 0.35 * uLightCol, glint);
-  float css = 4.5 / sqrt(max(dist, 1.0)) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.9);   // ~2 px up close, sub-pixel far; glints swell slightly
+  float css = 3.4 * pow(2.0 / max(dist, 1.0), 0.85) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.9);   // true perspective shrink   // ~2 px up close, sub-pixel far; glints swell slightly
   float px = css * uDpr;
   gl_PointSize = max(px, 1.0);
-  float sub = clamp(px, 0.0, 1.0);
-  float fog = 1.0 - smoothstep(uFogNear, uFogFar, dist);
-  vAlpha = fog * sqrt(sub) * smoothstep(0.5, 1.2, dist) * (0.7 + 0.25 * aSeed.y + glint * 1.4);
-  vGlint = glint;
+  float sub = clamp(css * 1.25, 0.0, 1.0);   // sub-CSS-pixel gems dim instead of staying a full device pixel (DPR-independent falloff)
+  // exponential falloff into the dark: ~100% near, ~50% by mid-depth, ~0 at the far end (no fog colour)
+  float fog = exp(-max(dist - 5.0, 0.0) * 0.024) * (1.0 - smoothstep(uFogFar * 0.5, uFogFar, dist));   // ~50% at 34 units (17 ft), ~20% at 70, ~0 at the end
+  vAlpha = fog * sub * smoothstep(0.5, 1.2, dist) * (0.7 + 0.25 * aSeed.y + glint * 1.4);
+  vGlint = glint; vH = H; vV = V; vSeed4 = aSeed; vScale = 1.0 + glint * 1.9; vLc = uLightCol * (0.6 + 0.4 * uLightI);
+  vDetail = smoothstep(5.0, 12.0, px);   // facets only where the sprite has enough device pixels to show them
   gl_Position = projectionMatrix * mv;
 }`,
   fragmentShader: /* glsl */`
 precision highp float;
-varying vec3 vCol; varying float vAlpha; varying float vGlint;
+varying vec3 vCol; varying float vAlpha; varying float vGlint; varying vec3 vH; varying vec3 vV; varying vec4 vSeed4; varying float vScale; varying vec3 vLc; varying float vDetail;
+vec3 rainbow(float h){ return 0.5 + 0.5 * cos(6.2831853 * (h + vec3(0.0, 0.33, 0.67))); }
 void main(){
-  vec2 q = gl_PointCoord - 0.5;
-  float d = max(abs(q.x), abs(q.y));               // square-cut outline
-  float body = 1.0 - smoothstep(0.40, 0.5, d);   // crisp edge
-  float table = 1.0 - smoothstep(0.08, 0.2, d);     // bright table facet
-  float cross = smoothstep(0.25, 0.8, vGlint) * (1.0 - step(0.06, min(abs(q.x), abs(q.y)))) * (1.0 - step(0.5, length(q)));
-  vec3 col = vCol * body + vec3(1.0, 0.98, 0.95) * (table * (0.35 + vGlint * 0.9) + cross * 1.3);
-  float a = max(body, cross) * vAlpha;
-  if (a < 0.003) discard;
-  gl_FragColor = vec4(col * a, a);
+  vec2 raw = gl_PointCoord - 0.5;
+  vec2 q = raw * vScale;                                      // gem body; sprite grows only to fit the star glint
+  float rot = vSeed4.x * 6.2831853;
+  q = mat2(cos(rot), -sin(rot), sin(rot), cos(rot)) * q;
+  // brilliant-cut outline: regular octagon, 8 crown facets around a flat table
+  float oct = max(max(abs(q.x), abs(q.y)), (abs(q.x) + abs(q.y)) * 0.7071);
+  float inside = step(oct, mix(0.62, 0.46, vDetail));   // tiny sprites: keep the whole pixel footprint
+  float ang = atan(q.y, q.x);
+  float k = floor((ang + 3.14159265) / 0.78539816);            // facet index 0..7
+  float ac = (k + 0.5) * 0.78539816 - 3.14159265;
+  float isTable = step(oct, 0.20);
+  float slope = mix(0.85, 0.0, isTable);
+  vec3 N = normalize(vec3(cos(ac + rot) * slope, -sin(ac + rot) * slope * -1.0, 1.0));
+  vec3 H = normalize(vH), V = normalize(vV);
+  float spec = pow(max(dot(N, H), 0.0), 60.0);
+  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  // prismatic dispersion: each facet throws a different spectral color as tilt changes
+  vec3 disp = clamp(rainbow(vSeed4.z + k * 0.137 + dot(N, V) * 5.0 + dot(V.xy, vec2(3.1, 2.3))) * 1.35 - 0.1, 0.0, 1.0);
+  float facetShade = 0.55 + 0.45 * fract(sin(k * 12.9898 + vSeed4.y * 78.233) * 43758.5453);   // crisp per-facet contrast
+  // thin dark facet edges (crisp, not blurred)
+  float edge = 1.0 - step(0.035, abs(fract((ang + 3.14159265) / 0.78539816 + 0.5) - 0.5)) * (1.0 - isTable);
+  float girdle = step(0.43, oct);
+  vec3 body = vCol * (0.35 + 0.35 * facetShade);              // clear, lightly tinted body
+  vec3 col = body + disp * (spec * 1.8 + fres * 0.35 + vGlint * 0.6) * vLc + vec3(1.0) * spec * 0.9;
+  float tableRing = (1.0 - step(0.02, abs(oct - 0.20)));
+  col *= 1.0 - 0.45 * clamp(edge * (1.0 - isTable) + tableRing + girdle * 0.6, 0.0, 1.0);
+  float a = inside * (0.38 + 0.25 * facetShade + spec * 0.6 + vGlint * 0.4);
+  // pinpoint gems (a few device px): a crisp bright spectral point instead of sub-pixel facet detail
+  vec3 pin = vCol * 1.05 + disp * vGlint * 0.8 * vLc;
+  col = mix(pin, col, vDetail);
+  a = mix(inside * (0.85 + vGlint * 0.15), a, vDetail);
+  // star-glint sparkle on hits: crisp 4 + 4 point rays
+  float s4 = (1.0 - step(0.035, abs(raw.x))) + (1.0 - step(0.035, abs(raw.y)));
+  float s8 = (1.0 - step(0.025, abs(raw.x - raw.y))) + (1.0 - step(0.025, abs(raw.x + raw.y)));
+  float star = smoothstep(0.35, 0.9, vGlint) * clamp(s4 + s8 * 0.5, 0.0, 1.0) * (1.0 - step(0.5, length(raw)));
+  col += vec3(1.0, 0.98, 0.94) * star * 1.4;
+  a = max(a, star);
+  a = clamp(a * vAlpha, 0.0, 1.0);
+  if (a < 0.004) discard;
+  gl_FragColor = vec4(col * vAlpha * max(inside, star), a);
 }`,
 });
 let crystals = null;
@@ -157,8 +186,8 @@ function buildCrystals() {
   const pos = [], seed = [], big = [];
   // perfectly aligned lattice (integer grid, offset by half a cell so no gem sits on the lens axis), filling the view frustum
   for (let iz = 0; iz < DEPTH / GRID + 2; iz++) {
-    const z = CAMZ - 1.5 - iz * GRID, dist = CAMZ - z;
-    const hh = (TAN * dist * 1.12 + 5) / GRID, hw = (TAN * dist * S.aspect * 1.12 + 5) / GRID;
+    const z = CAMZ - 2.0 - iz * GRID, dist = CAMZ - z;
+    const hh = (TAN * dist * 1.12 + 8) / GRID, hw = (TAN * dist * S.aspect * 1.12 + 8) / GRID;
     for (let iy = Math.floor(-hh); iy <= Math.ceil(hh); iy++)
       for (let ix = Math.floor(-hw); ix <= Math.ceil(hw); ix++) {
         pos.push((ix + 0.5) * GRID, (iy + 0.5) * GRID, z);
@@ -180,12 +209,11 @@ function buildCrystals() {
 const hud = new THREE.Scene();
 const hudCam = new THREE.OrthographicCamera(0, 1, 1, 0, -10, 10);
 function canvasTex(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); return t; }
-const glowTex = canvasTex(256, 256, (g, w) => {
-  const r = w / 2;
-  let gr = g.createRadialGradient(r, r, 0, r, r, r);
-  gr.addColorStop(0, 'rgba(255,250,235,1)'); gr.addColorStop(0.12, 'rgba(255,226,170,0.9)');
-  gr.addColorStop(0.35, 'rgba(214,190,255,0.45)'); gr.addColorStop(0.7, 'rgba(255,180,210,0.12)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
-  g.fillStyle = gr; g.fillRect(0, 0, w, w);
+const glowTex = canvasTex(128, 128, (g, w) => {
+  // tiny crisp four-point star (no soft glow)
+  const r = w / 2; g.fillStyle = '#fffaf0';
+  g.beginPath(); g.moveTo(r, 4); g.lineTo(r + 6, r - 6); g.lineTo(w - 4, r); g.lineTo(r + 6, r + 6); g.lineTo(r, w - 4); g.lineTo(r - 6, r + 6); g.lineTo(4, r); g.lineTo(r - 6, r - 6); g.closePath(); g.fill();
+  g.fillStyle = '#ffe6a8'; g.beginPath(); g.arc(r, r, 5, 0, Math.PI * 2); g.fill();
 });
 const _unusedSpark = canvasTex(64, 64, (g, w) => {
   const r = w / 2; let gr = g.createRadialGradient(r, r, 0, r, r, r);
@@ -193,7 +221,7 @@ const _unusedSpark = canvasTex(64, 64, (g, w) => {
   g.fillStyle = gr; g.fillRect(0, 0, w, w);
   g.fillStyle = 'rgba(255,255,255,0.9)'; g.fillRect(r - 0.75, 4, 1.5, w - 8); g.fillRect(4, r - 0.75, w - 8, 1.5);
 });
-const addMat = (map) => new THREE.MeshBasicMaterial({ map, transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, opacity: 0 });
+const addMat = (map) => new THREE.MeshBasicMaterial({ map, transparent: true, depthTest: false, depthWrite: false, opacity: 0 });
 const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), addMat(glowTex)); hud.add(glow);
 let wm = null;
 function buildWatermark() {
@@ -213,7 +241,7 @@ function placeWatermark() { if (!wm) return; const w = wm.geometry.parameters.wi
 // ---------- layout ----------
 function resize() {
   S.W = innerWidth; S.H = innerHeight; const old = S.aspect; S.aspect = S.W / S.H;
-  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 3));   // native DPR (iPhone = 3)
   renderer.setSize(S.W, S.H, false);
   crystalUniforms.uDpr.value = renderer.getPixelRatio();
   cam3.aspect = S.aspect; cam3.updateProjectionMatrix();
@@ -240,7 +268,7 @@ addEventListener('orientationchange', () => setTimeout(resize, 300));
 // ---------- camera ----------
 async function startCamera(facing) {
   if (S.stream) S.stream.getTracks().forEach(t => t.stop());
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } } });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1080 } } });
   S.stream = stream; S.facing = facing; S.mirror = facing === 'user';
   video.srcObject = stream; video.setAttribute('playsinline', ''); video.muted = true;
   await video.play().catch(() => {});
@@ -355,7 +383,7 @@ function estimateLight(now) {
   room.r += (tint[0] - room.r) * k; room.g += (tint[1] - room.g) * k; room.b += (tint[2] - room.b) * k;
   crystalUniforms.uLightDir.value.copy(room.dir);
   crystalUniforms.uLightCol.value.set(room.r, room.g, room.b);
-  crystalUniforms.uLightI.value = 0.35 + 1.4 * THREE.MathUtils.smoothstep(room.lum, 0.05, 0.6);  // brighter room = stronger sparkle
+  crystalUniforms.uLightI.value = 0.6 + 1.15 * THREE.MathUtils.smoothstep(room.lum, 0.05, 0.6);  // brighter room = stronger sparkle
   S.room = { lum: +room.lum.toFixed(3), tint: [room.r, room.g, room.b].map(c => +c.toFixed(2)), dir: room.dir.toArray().map(c => +c.toFixed(2)) };
 }
 
@@ -377,7 +405,7 @@ function frame() {
 
   // third-eye glow
   const pulse = 1 + 0.08 * Math.sin(t * 2.4);
-  const gs = Math.max(90, faceS.size * S.W * 0.9) * pulse;
+  const gs = 26 * pulse;
   glow.position.set(faceS.eu * S.W, faceS.ev * S.H, 0); glow.scale.set(gs, gs, 1);
   glow.material.opacity = faceS.present * 0.95;
   glow.rotation.z = t * 0.15;
@@ -387,6 +415,7 @@ function frame() {
   updateView(t, dt);
   renderer.clear();
   renderer.render(bgScene, bgCam);
+  renderer.render(dScene, hudCam);
   renderer.clearDepth();
   renderer.render(scene, cam3);
   renderer.render(hud, hudCam);
@@ -394,7 +423,7 @@ function frame() {
 
 // ---------- UI ----------
 $('#wmBtn').onclick = () => { S.watermark = !S.watermark; $('#wmBtn').classList.toggle('on', S.watermark); placeWatermark(); };
-$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); syncTorch(); renderFlashUI(); } catch (e) { setStatus('could not switch camera', true); } };
+$('#flipBtn').onclick = async () => { try { await startCamera(S.facing === 'user' ? 'environment' : 'user'); syncTorch(); renderFlashUI(); dev.init = false; D.anchor = null; } catch (e) { setStatus('could not switch camera', true); } };
 
 // ---------- flash: rear torch where supported, otherwise a warm "screen flash" ----------
 S.flash = false;
@@ -407,16 +436,23 @@ async function setTorch(on) { const tr = torchTrack(); if (!tr) return false; tr
 function syncTorch() { if (S.recording) setTorch(S.flash); }
 function renderFlashUI() {
   const b = $('#flashBtn'); b.classList.toggle('on', S.flash); b.setAttribute('aria-pressed', S.flash);
-  $('#flashLabel').textContent = S.flash ? 'ON' : 'OFF';
+  $('#flashLabel').textContent = S.flash ? 'FLASH ON' : 'FLASH OFF';
+  $('#flashState').textContent = S.flash ? '⚡ flash on' : '';
+  $('#flashState').classList.toggle('on', S.flash);
   // soft live fill light (bright edges) on the front camera while flash is on
-  $('#fillRing').classList.toggle('on', S.flash && S.facing === 'user');
+  $('#fillRing').classList.toggle('on', S.flash);
 }
-$('#flashBtn').addEventListener('click', (e) => {
-  e.preventDefault(); e.stopPropagation();
-  S.flash = !S.flash; renderFlashUI();
-  setStatus(S.flash ? (torchTrack() ? 'flash on · torch' : 'flash on · screen flash') : 'flash off', true);
+function toggleFlash() {
+  S.flash = !S.flash; S.flashToggles = (S.flashToggles || 0) + 1; renderFlashUI();
+  setStatus(S.flash ? (torchTrack() ? 'flash ON · torch + screen' : 'flash ON · screen flash') : 'flash OFF', true);
   if (S.recording) setTorch(S.flash);
-});
+}
+// iOS Safari: handle touchend AND click, de-duplicated (a touch is followed by a synthetic click)
+(() => {
+  const btn = $('#flashBtn'); let lastTouch = 0;
+  btn.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); lastTouch = Date.now(); toggleFlash(); }, { passive: false });
+  btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); if (Date.now() - lastTouch < 700) return; toggleFlash(); });
+})();
 const wait = ms => new Promise(r => setTimeout(r, ms));
 // wait until the camera has delivered n fresh frames (so the captured frame is lit by the flash)
 function freshFrames(n) {
@@ -541,31 +577,177 @@ const DEMON_LINES = [
   "The other seventy-five percent is smiling.",
   "Same time tomorrow, Renee?",
 ];
+// each demon speaks its own 6 lines (all 20 covered across the 10 demons), pre-rendered in its own voice
+const VOICE = {"1":[{"line":0,"file":"l01.m4a","laugh":2.07,"dur":4.29},{"line":1,"file":"l02.m4a","laugh":2.07,"dur":4.6},{"line":2,"file":"l03.m4a","laugh":2.07,"dur":4.29},{"line":3,"file":"l04.m4a","laugh":2.07,"dur":3.72},{"line":4,"file":"l05.m4a","laugh":2.07,"dur":4.52},{"line":5,"file":"l06.m4a","laugh":2.07,"dur":4.26}],"2":[{"line":2,"file":"l03.m4a","laugh":3.05,"dur":5.66},{"line":3,"file":"l04.m4a","laugh":3.05,"dur":5.28},{"line":4,"file":"l05.m4a","laugh":3.05,"dur":6.25},{"line":5,"file":"l06.m4a","laugh":3.05,"dur":5.8},{"line":6,"file":"l07.m4a","laugh":3.05,"dur":6.22},{"line":7,"file":"l08.m4a","laugh":3.05,"dur":6.98}],"3":[{"line":4,"file":"l05.m4a","laugh":2.63,"dur":6.62},{"line":5,"file":"l06.m4a","laugh":2.63,"dur":6.47},{"line":6,"file":"l07.m4a","laugh":2.63,"dur":7.04},{"line":7,"file":"l08.m4a","laugh":2.63,"dur":7.08},{"line":8,"file":"l09.m4a","laugh":2.63,"dur":6.32},{"line":9,"file":"l10.m4a","laugh":2.63,"dur":6.33}],"4":[{"line":6,"file":"l07.m4a","laugh":1.29,"dur":3.32},{"line":7,"file":"l08.m4a","laugh":1.29,"dur":4.07},{"line":8,"file":"l09.m4a","laugh":1.29,"dur":3.36},{"line":9,"file":"l10.m4a","laugh":1.29,"dur":2.97},{"line":10,"file":"l11.m4a","laugh":1.29,"dur":2.88},{"line":11,"file":"l12.m4a","laugh":1.29,"dur":3.05}],"5":[{"line":8,"file":"l09.m4a","laugh":1.27,"dur":3.37},{"line":9,"file":"l10.m4a","laugh":1.27,"dur":3.01},{"line":10,"file":"l11.m4a","laugh":1.27,"dur":2.77},{"line":11,"file":"l12.m4a","laugh":1.27,"dur":2.99},{"line":12,"file":"l13.m4a","laugh":1.27,"dur":3.25},{"line":13,"file":"l14.m4a","laugh":1.27,"dur":3.16}],"6":[{"line":10,"file":"l11.m4a","laugh":1.44,"dur":3.68},{"line":11,"file":"l12.m4a","laugh":1.44,"dur":3.9},{"line":12,"file":"l13.m4a","laugh":1.44,"dur":4.02},{"line":13,"file":"l14.m4a","laugh":1.44,"dur":4.15},{"line":14,"file":"l15.m4a","laugh":1.44,"dur":3.7},{"line":15,"file":"l16.m4a","laugh":1.44,"dur":4.01}],"7":[{"line":12,"file":"l13.m4a","laugh":1.47,"dur":4.88},{"line":13,"file":"l14.m4a","laugh":1.47,"dur":4.7},{"line":14,"file":"l15.m4a","laugh":1.47,"dur":4.13},{"line":15,"file":"l16.m4a","laugh":1.47,"dur":4.74},{"line":16,"file":"l17.m4a","laugh":1.47,"dur":4.39},{"line":17,"file":"l18.m4a","laugh":1.47,"dur":4.77}],"8":[{"line":14,"file":"l15.m4a","laugh":1.59,"dur":4.16},{"line":15,"file":"l16.m4a","laugh":1.59,"dur":3.97},{"line":16,"file":"l17.m4a","laugh":1.59,"dur":3.61},{"line":17,"file":"l18.m4a","laugh":1.59,"dur":4.11},{"line":18,"file":"l19.m4a","laugh":1.59,"dur":5.56},{"line":19,"file":"l20.m4a","laugh":1.59,"dur":3.23}],"9":[{"line":16,"file":"l17.m4a","laugh":3.79,"dur":7.51},{"line":17,"file":"l18.m4a","laugh":3.79,"dur":7.03},{"line":18,"file":"l19.m4a","laugh":3.79,"dur":7.23},{"line":19,"file":"l20.m4a","laugh":3.79,"dur":6.64},{"line":0,"file":"l01.m4a","laugh":3.79,"dur":6.87},{"line":1,"file":"l02.m4a","laugh":3.79,"dur":6.98}],"10":[{"line":18,"file":"l19.m4a","laugh":2.18,"dur":5.63},{"line":19,"file":"l20.m4a","laugh":2.18,"dur":4.84},{"line":0,"file":"l01.m4a","laugh":2.18,"dur":5.12},{"line":1,"file":"l02.m4a","laugh":2.18,"dur":5.44},{"line":2,"file":"l03.m4a","laugh":2.18,"dur":5.15},{"line":3,"file":"l04.m4a","laugh":2.18,"dur":4.51}]};
 const MAXV = 25;
-const D = { sel: 0, value: 10, tex: {}, line: 0, armed: true, laughStart: -10, base: new THREE.Vector3(0.25, 0.9, -1), capT: -10, capText: '' };
+const D = { sel: 0, value: 10, tex: {}, idx: 0, armed: true, laughStart: -10, laughDur: 1.8, capT: -10, capDur: 3.4, capText: '',
+  anchor: null, prompted: false, twitchAt: 3, twitchT: -10, twitchDir: 1, glitchAt: 8, glitchT: -10, sx: -1, sy: -1, vis: true };
 S.demon = D;
+
+// ---- iOS-robust audio: HTMLAudioElement (plays with the silent switch on) + WebAudio fallback ----
+const SILENT_WAV = 'data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';   // 0.1 s of silence
+const voiceEl = new Audio(); voiceEl.preload = 'auto'; voiceEl.setAttribute('playsinline', ''); voiceEl.crossOrigin = 'anonymous';
+let actx = null, audioUnlocked = false;
+const voiceCache = {};   // url -> { blobUrl, buf }
+function audioCtx() {
+  if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; try { actx = new C(); } catch (e) { return null; } }
+  if (actx.state !== 'running') actx.resume().catch(() => {});
+  return actx;
+}
+function unlockAudio() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}   // iOS 17+: ignore the ring/silent switch
+  const ac = audioCtx();
+  if (ac) { try { const b = ac.createBuffer(1, 1, 22050), s = ac.createBufferSource(); s.buffer = b; s.connect(ac.destination); s.start(0); } catch (e) {} }
+  if (!audioUnlocked || voiceEl.paused) {
+    if (!voiceEl.src || voiceEl.src.startsWith('data:') || !audioUnlocked) {
+      voiceEl.muted = false; voiceEl.src = SILENT_WAV;
+      const p = voiceEl.play(); if (p && p.then) p.then(() => { audioUnlocked = true; S.audioUnlocked = true; }).catch(() => {});
+    }
+  }
+}
+async function preloadVoice(i) {
+  for (const v of (VOICE[i] || [])) {
+    const url = `demons/voice/d${i}/${v.file}?v=4`;
+    if (voiceCache[url]) continue;
+    voiceCache[url] = {};
+    fetch(url).then(r => r.ok ? r.blob() : Promise.reject(r.status)).then(b => { voiceCache[url].blobUrl = URL.createObjectURL(b); return b.arrayBuffer(); })
+      .then(ab => { const ac = audioCtx(); if (ac) ac.decodeAudioData(ab.slice(0), buf => { voiceCache[url].buf = buf; }, () => {}); })
+      .catch(e => console.warn('voice preload', url, e));
+  }
+}
+function playVoice(url, onStart) {
+  const c = voiceCache[url] || {};
+  let started = false; const go = () => { if (!started) { started = true; onStart && onStart(); } };
+  const viaWebAudio = () => {
+    const ac = audioCtx();
+    if (ac && c.buf) { const s = ac.createBufferSource(); s.buffer = c.buf; s.connect(ac.destination); s.start(); S.audioPath = 'webaudio'; go(); return true; }
+    playLaugh(); S.audioPath = 'synth'; go(); return false;
+  };
+  try {
+    voiceEl.pause(); voiceEl.src = c.blobUrl || url; voiceEl.currentTime = 0;
+    const p = voiceEl.play();
+    S.audioPath = 'audio-element';
+    if (p && p.then) p.then(go).catch(e => { console.warn('audio element blocked, using WebAudio', e); viaWebAudio(); });
+    else go();
+    setTimeout(() => { if (!started) viaWebAudio(); }, 900);
+  } catch (e) { viaWebAudio(); }
+  S.voicePlays = (S.voicePlays || 0) + 1; S.lastVoice = url;
+}
+// synthesized laugh: last-resort fallback only
+function playLaugh() {
+  const ac = audioCtx(); if (!ac) return; const t0 = ac.currentTime + 0.03, n = 8;
+  const out = ac.createGain(); out.gain.value = 0.7; out.connect(ac.destination);
+  for (let i = 0; i < n; i++) {
+    const st = t0 + i * 0.16, f0 = 190 - i * 10;
+    const o = ac.createOscillator(); o.type = 'sawtooth'; o.frequency.setValueAtTime(f0 * 1.15, st); o.frequency.exponentialRampToValueAtTime(f0 * 0.8, st + 0.13);
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 750; bp.Q.value = 4;
+    const g = ac.createGain(); g.gain.setValueAtTime(0.0001, st); g.gain.exponentialRampToValueAtTime(1.2, st + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, st + 0.13);
+    o.connect(bp); bp.connect(g); g.connect(out); o.start(st); o.stop(st + 0.15);
+  }
+}
+
+// ---- rendering: demon drawn in screen space between the camera feed and the gems ----
+const dScene = new THREE.Scene();
 const demonMat = new THREE.ShaderMaterial({
-  uniforms: { map: { value: null }, uOpacity: { value: 0.1 }, uFlick: { value: 0 }, uFlickCol: { value: new THREE.Vector3(1, 0.15, 0.15) } },
-  transparent: true, depthWrite: false, depthTest: true,
-  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `uniform sampler2D map; uniform float uOpacity, uFlick; uniform vec3 uFlickCol; varying vec2 vUv;
-    void main(){ vec4 c = texture2D(map, vUv); float l = max(c.r, max(c.g, c.b));
-      vec3 col = mix(c.rgb, uFlickCol * (0.4 + l), uFlick); gl_FragColor = vec4(col, c.a * uOpacity); }`,
+  uniforms: { map: { value: null }, uOpacity: { value: 0.1 }, uFlick: { value: 0 }, uFlickCol: { value: new THREE.Vector3(1, 0.15, 0.15) },
+    uTime: { value: 0 }, uBreath: { value: 0 }, uTilt: { value: 0 }, uFlex: { value: 0 }, uStep: { value: 0 }, uJaw: { value: 0 }, uGlitch: { value: 0 }, uEye: { value: 0 } },
+  transparent: true, depthWrite: false, depthTest: false,
+  vertexShader: /* glsl */`
+uniform float uBreath, uTilt, uFlex, uStep, uJaw;
+varying vec2 vUv;
+void main(){
+  vec3 p = position;
+  // slow predatory breathing: the rib cage heaves
+  float torso = smoothstep(0.2, 0.45, uv.y) * (1.0 - smoothstep(0.55, 0.85, uv.y));
+  p.x *= 1.0 + uBreath * 0.05 * torso;
+  p.y += uBreath * 0.014 * smoothstep(0.3, 1.0, uv.y);
+  // head tilt around the neck
+  float head = smoothstep(0.58, 0.85, uv.y);
+  vec2 piv = vec2(0.0, 0.16), r = p.xy - piv;
+  float a = uTilt * head;
+  p.xy = mix(p.xy, piv + mat2(cos(a), -sin(a), sin(a), cos(a)) * r, head);
+  // jaw-ish stretch on the upper part
+  p.y += uJaw * 0.03 * head;
+  // wings / arms flex at the outer edges
+  float outer = pow(abs(uv.x - 0.5) * 2.0, 2.0);
+  p.y += uFlex * 0.05 * outer * smoothstep(0.3, 0.9, uv.y);
+  p.x += sign(uv.x - 0.5) * uFlex * 0.018 * outer;
+  // limbs creep (lower body skews)
+  float low = 1.0 - smoothstep(0.0, 0.38, uv.y);
+  p.x += low * 0.025 * uStep;
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+}`,
+  fragmentShader: /* glsl */`
+uniform sampler2D map; uniform float uOpacity, uFlick, uGlitch, uEye, uTime; uniform vec3 uFlickCol;
+varying vec2 vUv;
+void main(){
+  vec2 uv = vUv;
+  if (uGlitch > 0.0) {   // rare glitch-stutter: torn horizontal bands
+    float band = floor(uv.y * 22.0);
+    float h = fract(sin(band * 91.7 + floor(uTime * 24.0) * 13.1) * 43758.5);
+    if (h > 0.62) uv.x += (h - 0.81) * 0.12 * uGlitch;
+  }
+  vec4 c = texture2D(map, uv);
+  float l = max(c.r, max(c.g, c.b));
+  vec3 col = c.rgb * (1.0 + uEye * 1.4 * smoothstep(0.55, 0.95, l));   // flickering eye/bone glow
+  col = mix(col, uFlickCol * (0.4 + l), uFlick);
+  gl_FragColor = vec4(col, c.a * uOpacity);
+}`,
 });
-const demonMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), demonMat);
-demonMesh.visible = false; demonMesh.renderOrder = 2; scene.add(demonMesh);
+const demonMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 12, 16), demonMat);
+demonMesh.visible = false; dScene.add(demonMesh);
 const texLoader = new THREE.TextureLoader();
 function loadDemonTex(i) {
   if (D.tex[i]) return Promise.resolve(D.tex[i]);
-  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=3`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
+  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=4`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
 }
-// caption (rendered in WebGL so it shows up in photos/videos too)
+
+// ---- world anchoring with DeviceOrientation (alpha/beta/gamma) ----
+const dev = { has: false, a: 0, b: 0, g: 0, yaw: 0, pitch: 0, init: false };
+addEventListener('deviceorientation', e => {
+  if (e.alpha == null || e.beta == null || e.gamma == null) return;
+  dev.a = e.alpha; dev.b = e.beta; dev.g = e.gamma; dev.has = true;
+});
+const rad = Math.PI / 180;
+function camDirection() {
+  // W3C rotation R = Rz(alpha) Rx(beta) Ry(gamma); rear camera looks along -Z of the device, front camera along +Z
+  const ca = Math.cos(dev.a * rad), sa = Math.sin(dev.a * rad), cb = Math.cos(dev.b * rad), sb = Math.sin(dev.b * rad), cg = Math.cos(dev.g * rad), sg = Math.sin(dev.g * rad);
+  let x = ca * sg + sa * sb * cg, y = sa * sg - ca * sb * cg, z = cb * cg;     // third column of R
+  if (S.facing !== 'user') { x = -x; y = -y; z = -z; }
+  return { yaw: Math.atan2(x, y), pitch: Math.asin(Math.max(-1, Math.min(1, z))) };
+}
+const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
+const TANV = Math.tan(30 * rad);   // ~60° vertical view in portrait after the cover crop
+function updateDevDir() {
+  if (!dev.has) return;
+  const d = camDirection();
+  if (!dev.init) { dev.yaw = d.yaw; dev.pitch = d.pitch; dev.init = true; return; }
+  dev.yaw = wrapA(dev.yaw + wrapA(d.yaw - dev.yaw) * 0.35); dev.pitch += (d.pitch - dev.pitch) * 0.35;   // light smoothing
+}
+const LURK = { x: -0.42, y: 0.10 };   // where it first appears: off to one side, lurking
+function anchorDemon() {
+  const sgn = S.facing === 'user' ? -1 : 1, tanH = TANV * S.aspect;
+  if (dev.has && dev.init) D.anchor = { yaw: wrapA(dev.yaw + Math.atan(LURK.x * tanH) * sgn), pitch: dev.pitch + Math.atan(LURK.y * TANV) };
+  else D.anchor = null;
+  S.demonAnchored = !!D.anchor;
+}
+function demonScreenNDC() {
+  if (!D.anchor) { if (dev.has && dev.init && D.sel) anchorDemon(); }
+  if (!D.anchor) return { x: LURK.x, y: LURK.y, on: true };          // fallback: fixed corner
+  const sgn = S.facing === 'user' ? -1 : 1, tanH = TANV * S.aspect;
+  const dy = wrapA(D.anchor.yaw - dev.yaw), dp = D.anchor.pitch - dev.pitch;
+  if (Math.abs(dy) > 1.3 || Math.abs(dp) > 1.3) return { x: 9, y: 9, on: false };
+  return { x: sgn * Math.tan(dy) / tanH, y: Math.tan(dp) / TANV, on: true };
+}
+
+// ---- caption (in WebGL so it is captured) ----
 const capCanvas = document.createElement('canvas'); const capCtx = capCanvas.getContext('2d');
 const capTex = new THREE.CanvasTexture(capCanvas);
 const capMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: capTex, transparent: true, depthTest: false, opacity: 0 }));
 capMesh.visible = false; hud.add(capMesh);
 function drawCaption(text) {
-  const dpr = 2, fs = Math.round(Math.min(30, S.W / 13)), maxW = Math.max(180, S.W - 150);   // keep clear of the slider + icon column
+  const dpr = 2, fs = Math.round(Math.min(30, S.W / 13)), maxW = Math.max(180, S.W - 150);
   capCtx.font = `${fs * dpr}px Creepster, "Nosifer", fantasy`;
   const words = text.split(' '), lines = []; let cur = '';
   for (const w of words) { const tst = cur ? cur + ' ' + w : w; if (capCtx.measureText(tst).width > maxW * dpr && cur) { lines.push(cur); cur = w; } else cur = tst; }
@@ -575,96 +757,81 @@ function drawCaption(text) {
   capCtx.font = `${fs * dpr}px Creepster, "Nosifer", fantasy`; capCtx.textAlign = 'center'; capCtx.textBaseline = 'middle';
   lines.forEach((l, k) => {
     const y = pad + lh * (k + 0.5);
-    capCtx.shadowColor = 'rgba(60,120,255,0.95)'; capCtx.shadowBlur = 14 * dpr; capCtx.fillStyle = '#cfe3ff';
-    capCtx.fillText(l, capCanvas.width / 2, y);
+    capCtx.shadowColor = 'rgba(60,120,255,0.95)'; capCtx.shadowBlur = 10 * dpr; capCtx.fillStyle = '#cfe3ff'; capCtx.fillText(l, capCanvas.width / 2, y);
     capCtx.shadowBlur = 0; capCtx.fillStyle = '#f2f8ff'; capCtx.fillText(l, capCanvas.width / 2, y);
   });
   capTex.needsUpdate = true;
   capMesh.scale.set(capCanvas.width / dpr, capCanvas.height / dpr, 1);
 }
-// synthesized creepy laugh (WebAudio, no samples)
-let actx = null;
-function audioCtx() {
-  if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (!C) return null; actx = new C(); }
-  if (actx.state === 'suspended') actx.resume();
-  return actx;
-}
-function unlockAudio() { const ac = audioCtx(); if (!ac) return; const b = ac.createBuffer(1, 1, 22050); const s = ac.createBufferSource(); s.buffer = b; s.connect(ac.destination); s.start(0); }
-function playLaugh() {
-  const ac = audioCtx(); if (!ac) return; S.laughs = (S.laughs || 0) + 1;
-  const t0 = ac.currentTime + 0.03;
-  const out = ac.createGain(); out.gain.value = 0.8; out.connect(ac.destination);
-  const dl = ac.createDelay(1); dl.delayTime.value = 0.21; const fb = ac.createGain(); fb.gain.value = 0.38;
-  const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1800;
-  out.connect(dl); dl.connect(lp); lp.connect(fb); fb.connect(dl); const wet = ac.createGain(); wet.gain.value = 0.5; lp.connect(wet); wet.connect(ac.destination);
-  const ws = ac.createWaveShaper(); const curve = new Float32Array(2048);
-  for (let i = 0; i < 2048; i++) { const x = i / 1024 - 1; curve[i] = Math.tanh(x * 3.5); }
-  ws.curve = curve; const pre = ac.createGain(); pre.gain.value = 3.5; pre.connect(ws); ws.connect(out);
-  const noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.08, ac.sampleRate); const nd = noiseBuf.getChannelData(0); for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-  const n = 9;
-  for (let i = 0; i < n; i++) {
-    const st = t0 + i * 0.155 + Math.random() * 0.02, dur = 0.13;
-    const f0 = (200 - i * 11) * (0.94 + Math.random() * 0.12);
-    // breathy "h"
-    const ns = ac.createBufferSource(); ns.buffer = noiseBuf; const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 1400;
-    const ng = ac.createGain(); ng.gain.setValueAtTime(0.0001, st); ng.gain.exponentialRampToValueAtTime(0.25, st + 0.01); ng.gain.exponentialRampToValueAtTime(0.0001, st + 0.05);
-    ns.connect(hp); hp.connect(ng); ng.connect(out); ns.start(st); ns.stop(st + 0.08);
-    // voiced "ah" with two formants + a low detuned demon voice
-    [[1, 'sawtooth', 0.8], [0.5, 'square', 0.45], [0.497, 'sawtooth', 0.35]].forEach(([mul, type, amp]) => {
-      const o = ac.createOscillator(); o.type = type;
-      o.frequency.setValueAtTime(f0 * mul * 1.18, st + 0.03); o.frequency.exponentialRampToValueAtTime(f0 * mul * 0.78, st + 0.03 + dur);
-      const f1 = ac.createBiquadFilter(); f1.type = 'bandpass'; f1.frequency.value = 720; f1.Q.value = 5;
-      const f2 = ac.createBiquadFilter(); f2.type = 'bandpass'; f2.frequency.value = 1120; f2.Q.value = 7;
-      const g = ac.createGain(); g.gain.setValueAtTime(0.0001, st + 0.03); g.gain.exponentialRampToValueAtTime(amp, st + 0.045); g.gain.exponentialRampToValueAtTime(0.0001, st + 0.03 + dur);
-      o.connect(f1); o.connect(f2); f1.connect(g); f2.connect(g); g.connect(pre);
-      o.start(st + 0.03); o.stop(st + 0.05 + dur);
-    });
-  }
-  // low rumble under the laugh
-  const r = ac.createOscillator(); r.type = 'sine'; r.frequency.setValueAtTime(58, t0); r.frequency.linearRampToValueAtTime(42, t0 + n * 0.155 + 0.5);
-  const rg = ac.createGain(); rg.gain.setValueAtTime(0.0001, t0); rg.gain.exponentialRampToValueAtTime(0.5, t0 + 0.15); rg.gain.exponentialRampToValueAtTime(0.0001, t0 + n * 0.155 + 0.6);
-  r.connect(rg); rg.connect(out); r.start(t0); r.stop(t0 + n * 0.155 + 0.7);
-}
+
 function demonLaugh() {
   if (!D.sel) return;
-  D.laughStart = t; D.capT = t;
-  D.capText = DEMON_LINES[D.line % DEMON_LINES.length]; D.line++;
-  S.lastLine = D.capText;
-  drawCaption(D.capText); capMesh.visible = true;
-  playLaugh();
+  if (!D.prompted) { D.prompted = true; showVolumePrompt(); }   // only at the wall, once per selection
+  const list = VOICE[D.sel] || [];
+  const v = list.length ? list[D.idx % list.length] : null; D.idx++;
+  const li = v ? v.line : (D.idx - 1) % DEMON_LINES.length;
+  D.capText = DEMON_LINES[li]; S.lastLine = D.capText;
+  drawCaption(D.capText);
+  const laughDur = v ? v.laugh : 1.6, total = v ? v.dur : 3.4;
+  const start = () => { D.laughStart = t; D.laughDur = laughDur; D.capT = t + laughDur * 0.85; D.capDur = Math.max(2.6, total - laughDur + 0.9); };
+  start();   // visuals start immediately (audio start re-syncs below)
+  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=4`, start); else playLaugh();
   if (navigator.vibrate) navigator.vibrate([40, 30, 40, 30, 60]);
 }
 function placeDemon(tex) {
   const ar = tex.image.width / tex.image.height;
-  const dist = CAMZ - D.base.z, halfH = TAN * dist, halfW = halfH * S.aspect;
-  let h = halfH * 0.95, w = h * ar;
-  if (w > halfW * 1.9) { w = halfW * 1.9; h = w / ar; }
+  let h = S.H * 0.46, w = h * ar;
+  if (w > S.W * 0.95) { w = S.W * 0.95; h = w / ar; }
   demonMesh.userData.size = [w, h];
 }
+const rnd = (a, b) => a + Math.random() * (b - a);
 function updateDemon(tt, dt) {
+  updateDevDir();
   if (!demonMesh.visible) { capMesh.visible = false; return; }
-  const [w, h] = demonMesh.userData.size || [2, 2];
-  const lt = tt - D.laughStart, laughing = lt >= 0 && lt < 1.8;
-  let x = D.base.x + Math.sin(tt * 0.6) * 0.06, y = D.base.y + Math.sin(tt * 1.3) * 0.07, sx = 1 + Math.sin(tt * 2) * 0.012, sy = sx;
-  let rot = Math.sin(tt * 0.9) * 0.035, flick = 0;
+  const [w, h] = demonMesh.userData.size || [200, 200];
+  const u = demonMat.uniforms;
+  const ndc = demonScreenNDC();
+  let x = (ndc.x + 1) / 2 * S.W, y = (ndc.y + 1) / 2 * S.H;
+  D.vis = ndc.on && x > -w && x < S.W + w && y > -h && y < S.H + h;
+  // menacing idle: slow heaving breath, head tilt, creeping lean, limb flex, eye flicker
+  const breath = Math.pow(0.5 + 0.5 * Math.sin(tt * 0.75), 1.6) * 2 - 1;
+  let tilt = 0.09 * Math.sin(tt * 0.31) + 0.04 * Math.sin(tt * 0.83 + 1.3);
+  const lean = 1 + 0.055 * (0.5 + 0.5 * Math.sin(tt * 0.23)) ** 3;          // slowly leans in, then back
+  let flex = Math.sin(tt * 0.9) * 0.8 + Math.sin(tt * 2.3) * 0.2, stepv = Math.sin(tt * 0.6), jaw = 0;
+  let eye = 0.25 + 0.35 * Math.abs(Math.sin(tt * 13.0) * Math.sin(tt * 7.3)) + (Math.random() < 0.03 ? 0.6 : 0);
+  let rot = 0, ox = 0, oy = 0, sx = lean, sy = lean, flick = 0, glitch = 0;
+  // occasional sudden twitch / jerk
+  if (tt > D.twitchAt) { D.twitchT = tt; D.twitchDir = Math.random() < 0.5 ? -1 : 1; D.twitchAt = tt + rnd(2.5, 6.5); }
+  const tw = tt - D.twitchT;
+  if (tw < 0.22) { const k = 1 - tw / 0.22; rot += 0.06 * D.twitchDir * k; tilt += 0.28 * D.twitchDir * k; ox += 9 * D.twitchDir * k; flex += 1.2 * k; }
+  // rare glitch-stutter
+  if (tt > D.glitchAt) { D.glitchT = tt; D.glitchAt = tt + rnd(7, 15); }
+  const gl = tt - D.glitchT;
+  if (gl < 0.24) { glitch = 1; if (Math.floor(gl * 30) % 2) { ox += rnd(-14, 14); oy += rnd(-6, 6); } }
+  // laugh at the 25% wall: much more intense
+  const lt = tt - D.laughStart, laughing = lt >= 0 && lt < D.laughDur + 0.3;
   if (laughing) {
-    const fall = 1 - lt / 1.8;
-    x += (Math.random() - 0.5) * 0.14 * fall; y += (Math.random() - 0.5) * 0.14 * fall;
-    sy *= 1 + 0.08 * Math.abs(Math.sin(lt * 31)) * fall; sx *= 1 - 0.025 * Math.abs(Math.sin(lt * 31)) * fall;
-    rot += (Math.random() - 0.5) * 0.06 * fall;
-    flick = (Math.floor(lt * 11) % 3 === 0 ? 0.75 : 0.0) * fall;
-    demonMat.uniforms.uFlickCol.value.set(...(Math.floor(lt * 11) % 2 ? [1, 0.12, 0.12] : [0.55, 0.8, 1.0]));
+    const fall = 1 - Math.min(1, lt / (D.laughDur + 0.3));
+    ox += rnd(-1, 1) * 12 * fall; oy += rnd(-1, 1) * 10 * fall;
+    jaw = Math.abs(Math.sin(lt * 31)) * fall; sy *= 1 + 0.07 * jaw; sx *= 1 - 0.02 * jaw;
+    rot += rnd(-0.05, 0.05) * fall; tilt += Math.sin(lt * 9) * 0.15 * fall; flex = Math.sin(lt * 14) * 1.6 * fall + flex * (1 - fall);
+    flick = (Math.floor(lt * 11) % 3 === 0 ? 0.75 : 0.0) * fall; eye = 1.4 * fall + eye;
+    u.uFlickCol.value.set(...(Math.floor(lt * 11) % 2 ? [1, 0.12, 0.12] : [0.55, 0.8, 1.0]));
+    if (Math.random() < 0.08 * fall) glitch = 1;
   }
-  demonMesh.position.set(x, y, D.base.z); demonMesh.scale.set(w * sx, h * sy, 1); demonMesh.rotation.z = rot;
-  demonMat.uniforms.uFlick.value = flick;
-  demonMat.uniforms.uOpacity.value = Math.min(MAXV, D.value) / 100;   // never more than 25% visible
-  // caption: near the demon, ~3.2 s, eerie flicker
+  demonMesh.visible = true;
+  demonMesh.position.set(x + ox, y + oy, 0); demonMesh.scale.set(w * sx, h * sy, 1); demonMesh.rotation.z = rot;
+  u.uTime.value = tt; u.uBreath.value = breath; u.uTilt.value = tilt; u.uFlex.value = flex; u.uStep.value = stepv; u.uJaw.value = jaw;
+  u.uGlitch.value = glitch; u.uEye.value = eye; u.uFlick.value = flick;
+  u.uOpacity.value = D.vis ? Math.min(MAXV, D.value) / 100 : 0;      // never more than 25% visible
+  S.demonPos = [Math.round(x), Math.round(y)];
+  // caption: shown while the line is spoken, left of the slider/icon column
   const ct = tt - D.capT;
-  if (ct >= 0 && ct < 3.4 && D.capText) {
-    const p = demonMesh.position.clone().project(cam3);
-    const px = (S.W - 130) / 2 + 4, py = Math.max(200, Math.min(S.H - 140, (p.y + 1) / 2 * S.H - h / (2 * TAN * (CAMZ - D.base.z)) * S.H * 0.45));
+  if (ct >= 0 && ct < D.capDur && D.capText) {
+    const px = (S.W - 130) / 2 + 4;
+    const py = Math.max(200, Math.min(S.H - 140, (D.vis ? y : S.H * 0.5) - h * 0.55));
     capMesh.position.set(px, py, 0); capMesh.visible = true;
-    const fade = Math.min(1, ct / 0.25) * (1 - Math.max(0, (ct - 2.8) / 0.6));
+    const fade = Math.min(1, ct / 0.2) * (1 - Math.max(0, (ct - (D.capDur - 0.5)) / 0.5));
     capMesh.material.opacity = fade * (Math.random() < 0.06 ? 0.45 : 1);
   } else capMesh.visible = false;
 }
@@ -693,6 +860,7 @@ function sliderInput(raw) {
   const track = $('#dsTrack'); let drag = false;
   const rawFrom = e => { const r = track.getBoundingClientRect(); return (r.bottom - e.clientY) / r.height * 100; };
   track.addEventListener('pointerdown', e => { e.preventDefault(); drag = true; try { track.setPointerCapture(e.pointerId); } catch (_) {} unlockAudio(); sliderInput(rawFrom(e)); });
+  track.addEventListener('touchstart', () => unlockAudio(), { passive: true });
   track.addEventListener('pointermove', e => { if (drag) { e.preventDefault(); sliderInput(rawFrom(e)); } });
   const end = () => { if (drag) { drag = false; D.armed = true; } };
   track.addEventListener('pointerup', end); track.addEventListener('pointercancel', end);
@@ -702,13 +870,13 @@ async function selectDemon(i) {
   unlockAudio();
   const btns = document.querySelectorAll('#demonBar button');
   if (D.sel === i) {                               // tap again: remove
-    D.sel = 0; demonMesh.visible = false; capMesh.visible = false;
+    D.sel = 0; demonMesh.visible = false; capMesh.visible = false; D.anchor = null;
     btns.forEach(b => b.classList.remove('sel')); $('#demonSlider').classList.add('hidden'); return;
   }
   D.sel = i; btns.forEach(b => b.classList.toggle('sel', +b.dataset.i === i));
-  D.value = 10; D.armed = true; D.capT = -10; renderSlider();
+  D.value = 10; D.armed = true; D.capT = -10; D.idx = 0; D.prompted = false; renderSlider();
   $('#demonSlider').classList.remove('hidden');
-  showVolumePrompt();
+  anchorDemon(); preloadVoice(i);
   try { const tex = await loadDemonTex(i); if (D.sel !== i) return; demonMat.uniforms.map.value = tex; placeDemon(tex); demonMesh.visible = true; }
   catch (e) { console.warn('demon load failed', e); }
 }
@@ -716,21 +884,21 @@ async function selectDemon(i) {
   const bar = $('#demonBar');
   for (let i = 1; i <= 10; i++) {
     const b = document.createElement('button'); b.dataset.i = i; b.setAttribute('aria-label', 'Demon ' + i);
-    b.innerHTML = `<img src="demons/t${i}.png?v=3" alt="" draggable="false">`;
+    b.innerHTML = `<img src="demons/t${i}.png?v=4" alt="" draggable="false">`;
     b.addEventListener('click', e => { e.preventDefault(); selectDemon(i); });
     bar.appendChild(b);
   }
 })();
 
 async function begin(withCam) {
-  $('#start').classList.add('hidden'); $('#ui').classList.remove('hidden');
+  $('#start').classList.add('hidden'); $('#ui').classList.remove('hidden'); $('#flashBtn').classList.remove('hidden');
   if (withCam) initTracking(); else setStatus('✦ demo mode (no camera)', true);
 }
 $('#startBtn').onclick = async () => {
   $('#startErr').classList.add('hidden');
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('This browser can’t open the camera here. Open the link in Safari (not inside the X app).');
-    requestOrientation();
+    requestOrientation(); unlockAudio();
     await startCamera('user');
     begin(true);
   } catch (e) {
@@ -738,7 +906,7 @@ $('#startBtn').onclick = async () => {
     const el = $('#startErr'); el.textContent = msg; el.classList.remove('hidden'); $('#demoBtn').classList.remove('hidden');
   }
 };
-$('#demoBtn').onclick = () => { requestOrientation(); begin(false); };
+$('#demoBtn').onclick = () => { requestOrientation(); unlockAudio(); begin(false); };
 
 resize();
 renderFlashUI();

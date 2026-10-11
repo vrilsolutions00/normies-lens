@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1e1530">
+<title>Infinity Lens ✦ Normies Awakening</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;1,500&family=Quicksand:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%E2%9C%A6%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<canvas id="gl"></canvas>
+<video id="video" playsinline muted autoplay></video>
+
+<div id="ui" class="hidden">
+  <div class="top">
+    <button id="modeBtn" class="pill" aria-label="Change style"><span id="modeName">Infinity</span><span class="dots"><i></i><i></i><i></i></span></button>
+    <button id="wmBtn" class="icon small on" aria-label="Toggle watermark" title="Watermark">✦</button>
+  </div>
+  <div id="status" class="status">loading tracking…</div>
+  <div id="recTimer" class="rec-timer hidden">● 0:00</div>
+  <div class="bottom">
+    <button id="recBtn" class="icon" aria-label="Record video"><span class="recdot"></span></button>
+    <button id="shutter" class="shutter" aria-label="Take photo"><span></span></button>
+    <button id="flipBtn" class="icon" aria-label="Flip camera">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-3l-2-3H9L7 7H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1z"/><path d="M9 13a3 3 0 0 1 5.2-2"/><path d="M15 13a3 3 0 0 1-5.2 2"/><path d="M14.5 9.5v1.8h-1.8"/><path d="M9.5 16.5v-1.8h1.8"/></svg>
+    </button>
+  </div>
+</div>
+
+<div id="start" class="overlay">
+  <div class="card">
+    <div class="sigil">✦</div>
+    <h1>Infinity Lens</h1>
+    <p class="sub">a soft mirror room for your awakening</p>
+    <button id="startBtn" class="cta">Tap to start</button>
+    <p class="hint">Allow camera and motion access when asked. Tilt your phone or move your head to make the crystals shimmer. Look into the lens to light your third eye.</p>
+    <p id="startErr" class="err hidden"></p>
+    <button id="demoBtn" class="link hidden">Continue without camera</button>
+  </div>
+</div>
+
+<div id="preview" class="overlay hidden">
+  <div class="sheet">
+    <div id="previewMedia" class="media"></div>
+    <div class="row">
+      <button id="shareBtn" class="cta">Save / Share</button>
+      <a id="dlBtn" class="ghost" download>Download</a>
+      <button id="closePrev" class="ghost">Close</button>
+    </div>
+    <p class="hint small">On iPhone: tap Save / Share, then “Save Image” or “Save Video”. You can also press and hold the picture.</p>
+  </div>
+</div>
+
+<div id="flash" class="flash"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

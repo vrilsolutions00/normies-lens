@@ -1,6 +1,6 @@
 :root{--gold:#f3d9a0;--lav:#c9b6ff;--blush:#ffc2d6;--plum:#1e1530;--ink:#fff8ef}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;height:100%;background:var(--plum);overflow:hidden;overscroll-behavior:none;touch-action:none;
+html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:none;
   font-family:Quicksand,system-ui,-apple-system,sans-serif;color:var(--ink);-webkit-user-select:none;user-select:none}
 #gl{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;display:block}
 #video{position:fixed;width:2px;height:2px;opacity:0;pointer-events:none;left:0;top:0}
@@ -56,7 +56,7 @@ h1{font:500 38px/1.08 'Cormorant Garamond',Georgia,serif;margin:0;letter-spacing
 .flash-state{position:fixed;left:18px;bottom:calc(env(safe-area-inset-bottom) + 190px);z-index:2147483000;pointer-events:none;font:700 11px Quicksand,sans-serif;color:#ffe14d;text-shadow:0 1px 2px #000}
 .screen-flash{position:fixed;inset:0;background:#fff;opacity:0;visibility:hidden;pointer-events:none;z-index:2147483647;transition:none}
 .screen-flash.on{opacity:1;visibility:visible}
-.fill-ring{position:fixed;inset:0;pointer-events:none;z-index:1;display:none;border:46px solid #fff;border-radius:0}
+.fill-ring{position:fixed;inset:0;pointer-events:none;z-index:1;display:none;border:46px solid #fff}
 .fill-ring.on{display:block}
 /* demons */
 .demon-bar{position:absolute;right:8px;top:calc(env(safe-area-inset-top) + 66px);bottom:calc(env(safe-area-inset-bottom) + 128px);width:48px;

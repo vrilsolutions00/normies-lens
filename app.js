@@ -72,7 +72,6 @@ void main(){
   float asp = uRes.x / uRes.y;
   // camera feed: full-screen, fully opaque, untouched colors (no grading, no mask, no vignette, no glow)
   vec3 col = uHasCam > 0.5 ? texture2D(uCam, clamp(camUV(s), 0.0, 1.0)).rgb : vec3(0.075, 0.045, 0.125);
-  col = mix(col, 1.0 - (1.0 - col) * (1.0 - col) * 0.82, uBoost);   // flash ON: brighter exposure (lifts shadows, no blur)
   gl_FragColor = vec4(col, 1.0);
 }`,
 });
@@ -128,10 +127,12 @@ void main(){
   float css = 3.4 * pow(2.0 / max(dist, 1.0), 0.85) * (1.0 + 0.5 * aBig) * (1.0 + glint * 1.9);   // true perspective shrink   // ~2 px up close, sub-pixel far; glints swell slightly
   float px = css * uDpr;
   gl_PointSize = max(px, 1.0);
+  gl_Position = projectionMatrix * mv;
   float sub = clamp(css * 1.25, 0.0, 1.0);   // sub-CSS-pixel gems dim instead of staying a full device pixel (DPR-independent falloff)
   // exponential falloff into the dark: ~100% near, ~50% by mid-depth, ~0 at the far end (no fog colour)
   float fog = exp(-max(dist - 5.0, 0.0) * 0.024) * (1.0 - smoothstep(uFogFar * 0.5, uFogFar, dist));   // ~50% at 34 units (17 ft), ~20% at 70, ~0 at the end
   vAlpha = fog * sub * smoothstep(0.5, 1.2, dist) * (0.7 + 0.25 * aSeed.y + glint * 1.4);
+  if (vAlpha < 0.07) { gl_PointSize = 0.0; gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }   // too faint: draw nothing at all (no milky dust)
   vGlint = glint; vH = H; vV = V; vSeed4 = aSeed; vScale = 1.0 + glint * 1.9; vLc = uLightCol * (0.6 + 0.4 * uLightI);
   vDetail = smoothstep(5.0, 12.0, px);   // facets only where the sprite has enough device pixels to show them
   gl_Position = projectionMatrix * mv;
@@ -179,7 +180,7 @@ void main(){
   col += vec3(1.0, 0.98, 0.94) * star * 1.4;
   a = max(a, star);
   a = clamp(a * vAlpha, 0.0, 1.0);
-  if (a < 0.004) discard;
+  if (a < 0.03) discard;
   gl_FragColor = vec4(col * vAlpha * max(inside, star), a);
 }`,
 });
@@ -207,6 +208,7 @@ function buildCrystals() {
   crystals.frustumCulled = false;
   scene.add(crystals);
   S.gemCount = pos.length / 3;
+  window.__lensGems = v => { crystals.visible = v; };
 }
 
 // ---------- HUD (third-eye glow, fingertip sparkles, watermark) ----------
@@ -447,8 +449,7 @@ function renderFlashUI() {
   $('#flashState').textContent = S.flash ? '⚡ flash on' : '';
   $('#flashState').classList.toggle('on', S.flash);
   // soft live fill light (bright edges) on the front camera while flash is on
-  $('#fillRing').classList.toggle('on', S.flash);
-  bgUniforms.uBoost.value = S.flash ? 0.55 : 0;
+  $('#fillRing').classList.toggle('on', S.flash);   // flash ON: thick white fill-light frame around the edge; the camera image itself is never tinted or brightened
 }
 function flashToast(t) {
   const el = $('#flashToast'); el.textContent = t; el.classList.remove('hidden'); el.classList.add('show');
@@ -638,7 +639,7 @@ function unlockAudio() {
 }
 async function preloadVoice(i) {
   for (const v of (VOICE[i] || [])) {
-    const url = `demons/voice/d${i}/${v.file}?v=5`;
+    const url = `demons/voice/d${i}/${v.file}?v=6`;
     if (voiceCache[url]) continue;
     voiceCache[url] = {};
     fetch(url).then(r => r.ok ? r.blob() : Promise.reject(r.status)).then(b => { voiceCache[url].blobUrl = URL.createObjectURL(b); return b.arrayBuffer(); })
@@ -680,11 +681,11 @@ function playLaugh() {
 // ---- rendering: demon drawn in screen space between the camera feed and the gems ----
 const dScene = new THREE.Scene();
 const demonMat = new THREE.ShaderMaterial({
-  uniforms: { map: { value: null }, uOpacity: { value: 0.1 }, uFlick: { value: 0 }, uFlickCol: { value: new THREE.Vector3(1, 0.15, 0.15) },
+  uniforms: { map: { value: null }, uPersp: { value: 0 }, uOpacity: { value: 0.1 }, uFlick: { value: 0 }, uFlickCol: { value: new THREE.Vector3(1, 0.15, 0.15) },
     uTime: { value: 0 }, uBreath: { value: 0 }, uTilt: { value: 0 }, uFlex: { value: 0 }, uStep: { value: 0 }, uJaw: { value: 0 }, uGlitch: { value: 0 }, uEye: { value: 0 } },
   transparent: true, depthWrite: false, depthTest: false,
   vertexShader: /* glsl */`
-uniform float uBreath, uTilt, uFlex, uStep, uJaw;
+uniform float uBreath, uTilt, uFlex, uStep, uJaw, uPersp;
 varying vec2 vUv;
 void main(){
   vec3 p = position;
@@ -706,6 +707,8 @@ void main(){
   // limbs creep (lower body skews)
   float low = 1.0 - smoothstep(0.0, 0.38, uv.y);
   p.x += low * 0.025 * uStep;
+  // surface perspective: the part of the body farther along the floor/ceiling/wall gets narrower
+  p.x *= 1.0 + uPersp * (uv.y - 0.5) * 2.0;
   vUv = uv;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }`,
@@ -723,15 +726,22 @@ void main(){
   float l = max(c.r, max(c.g, c.b));
   vec3 col = c.rgb * (1.0 + uEye * 1.4 * smoothstep(0.55, 0.95, l));   // flickering eye/bone glow
   col = mix(col, uFlickCol * (0.4 + l), uFlick);
-  gl_FragColor = vec4(col, c.a * uOpacity);
+  float a = c.a * smoothstep(0.16, 0.5, c.a);   // keep only the body: drop the faint halo so no glow washes over the scene
+  gl_FragColor = vec4(col, a * uOpacity);
 }`,
 });
 const demonMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1, 12, 16), demonMat);
-demonMesh.visible = false; dScene.add(demonMesh);
+demonMesh.visible = false;
+// subtle contact shadow (floor demons only): small dark ellipse under the feet
+const shadowTex = (() => { const c = document.createElement('canvas'); c.width = 128; c.height = 32; const g = c.getContext('2d');
+  const gr = g.createRadialGradient(64, 16, 2, 64, 16, 62); gr.addColorStop(0, 'rgba(0,0,0,1)'); gr.addColorStop(0.55, 'rgba(0,0,0,0.55)'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.setTransform(1, 0, 0, 0.25, 0, 12); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); const t = new THREE.CanvasTexture(c); return t; })();
+const shadowMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthTest: false, opacity: 0 }));
+shadowMesh.visible = false; dScene.add(shadowMesh); dScene.add(demonMesh);
 const texLoader = new THREE.TextureLoader();
 function loadDemonTex(i) {
   if (D.tex[i]) return Promise.resolve(D.tex[i]);
-  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=5`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
+  return new Promise((res, rej) => texLoader.load(`demons/d${i}.png?v=6`, t => { t.minFilter = THREE.LinearFilter; t.generateMipmaps = false; D.tex[i] = t; res(t); }, undefined, rej));
 }
 
 // ---- world anchoring with DeviceOrientation (alpha/beta/gamma) ----
@@ -756,22 +766,44 @@ function updateDevDir() {
   if (!dev.init) { dev.yaw = d.yaw; dev.pitch = d.pitch; dev.init = true; return; }
   dev.yaw = wrapA(dev.yaw + wrapA(d.yaw - dev.yaw) * 0.35); dev.pitch += (d.pitch - dev.pitch) * 0.35;   // light smoothing
 }
-const LURK = { x: -0.42, y: 0.10 };   // where it first appears: off to one side, lurking
+// ---- surface placement (no WebXR on iOS: use world pitch from DeviceOrientation to put each demon on a plausible
+// surface, never at eye level where the furniture is) ----
+//   ceiling: 55-75° up, upside-down, clinging   |   wall: high corner 35-45° up, off to the side, sideways on the wall
+//   floor:   45-65° down, crouched, ground perspective + contact shadow
+const SURFACE = { 1: 'wall', 2: 'ceiling', 3: 'floor', 4: 'floor', 5: 'ceiling', 6: 'wall', 7: 'floor', 8: 'floor', 9: 'ceiling', 10: 'wall' };
+const SURF_CFG = {
+  //            pitch range (deg)  yaw offset (deg)  fallback screen spot (NDC)   size (x screen H)  rotation          perspective  y-squash
+  ceiling: { p: [55, 75],  yaw: [6, 16],  fb: { x: -0.30, y: 0.72 }, size: 0.21, rot: Math.PI,       persp: -0.22, sq: 0.78 },
+  wall:    { p: [35, 45],  yaw: [20, 30], fb: { x: -0.66, y: 0.58 }, size: 0.19, rot: Math.PI / 2.2, persp: -0.20, sq: 0.90 },
+  floor:   { p: [-65, -45], yaw: [6, 18],  fb: { x: -0.30, y: -0.40 }, size: 0.22, rot: 0,           persp: -0.24, sq: 0.74 },
+};
+function surfOf(i) { return SURFACE[i] || 'floor'; }
 function anchorDemon() {
-  const sgn = S.facing === 'user' ? -1 : 1, tanH = TANV * S.aspect;
-  if (dev.has && dev.init) D.anchor = { yaw: wrapA(dev.yaw + Math.atan(LURK.x * tanH) * sgn), pitch: dev.pitch + Math.atan(LURK.y * TANV) };
-  else D.anchor = null;
-  S.demonAnchored = !!D.anchor;
+  const cfg = SURF_CFG[surfOf(D.sel)];
+  D.side = Math.random() < 0.5 ? -1 : 1;
+  D.surf = surfOf(D.sel);
+  D.enterT = t; D.enterFrom = null;
+  if (dev.has && dev.init) {
+    const sgn = S.facing === 'user' ? -1 : 1;   // keep "left/right of the screen" consistent for the mirrored front view
+    D.anchor = { yaw: wrapA(dev.yaw + D.side * sgn * rnd(cfg.yaw[0], cfg.yaw[1]) * rad), pitch: rnd(cfg.p[0], cfg.p[1]) * rad };   // absolute world pitch
+  } else D.anchor = null;
+  S.demonAnchored = !!D.anchor; S.demonSurface = D.surf;
 }
 function demonScreenNDC() {
+  const cfg = SURF_CFG[D.surf || 'floor'];
   if (!D.anchor) { if (dev.has && dev.init && D.sel) anchorDemon(); }
-  if (!D.anchor) return { x: LURK.x, y: LURK.y, on: true };          // fallback: fixed corner
+  if (!D.anchor) return { x: Math.min(0.40, cfg.fb.x * (D.side || -1) * -1), y: cfg.fb.y, on: true };   // right side stays clear of the icon column    // fallback: fixed spot on that surface's side of the frame
+  // true 3D projection of the world-anchored direction into the current camera frame (correct when looking up/down)
   const sgn = S.facing === 'user' ? -1 : 1, tanH = TANV * S.aspect;
-  const dy = wrapA(D.anchor.yaw - dev.yaw), dp = D.anchor.pitch - dev.pitch;
-  if (Math.abs(dy) > 1.3 || Math.abs(dp) > 1.3) return { x: 9, y: 9, on: false };
-  return { x: sgn * Math.tan(dy) / tanH, y: Math.tan(dp) / TANV, on: true };
+  const dir = (yw, pt) => [Math.cos(pt) * Math.sin(yw), Math.cos(pt) * Math.cos(yw), Math.sin(pt)];
+  const A = dir(D.anchor.yaw, D.anchor.pitch), F = dir(dev.yaw, dev.pitch);
+  const Rt = [Math.cos(dev.yaw), -Math.sin(dev.yaw), 0];
+  const Up = [Rt[1] * F[2] - Rt[2] * F[1], Rt[2] * F[0] - Rt[0] * F[2], Rt[0] * F[1] - Rt[1] * F[0]];
+  const dot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+  const cx = dot(A, Rt), cy = dot(A, Up), cz = dot(A, F);
+  if (cz < 0.25) return { x: Math.sign(sgn * cx || 1) * 3, y: Math.sign(cy || 1) * 3, on: false };
+  return { x: sgn * (cx / cz) / tanH, y: (cy / cz) / TANV, on: true };
 }
-
 // ---- caption (in WebGL so it is captured) ----
 const capCanvas = document.createElement('canvas'); const capCtx = capCanvas.getContext('2d');
 const capTex = new THREE.CanvasTexture(capCanvas);
@@ -791,7 +823,7 @@ function drawCaption(text) {
     capCtx.shadowColor = 'rgba(60,120,255,0.95)'; capCtx.shadowBlur = 10 * dpr; capCtx.fillStyle = '#cfe3ff'; capCtx.fillText(l, capCanvas.width / 2, y);
     capCtx.shadowBlur = 0; capCtx.fillStyle = '#f2f8ff'; capCtx.fillText(l, capCanvas.width / 2, y);
   });
-  capTex.needsUpdate = true;
+  capTex.dispose(); capTex.needsUpdate = true;   // canvas size changes per line: re-allocate the GPU texture (otherwise the old caption stays)
   capMesh.scale.set(capCanvas.width / dpr, capCanvas.height / dpr, 1);
 }
 
@@ -806,24 +838,38 @@ function demonLaugh() {
   const laughDur = v ? v.laugh : 1.6, total = v ? v.dur : 3.4;
   const start = () => { D.laughStart = t; D.laughDur = laughDur; D.capT = t + laughDur * 0.85; D.capDur = Math.max(2.6, total - laughDur + 0.9); };
   start();   // visuals start immediately (audio start re-syncs below)
-  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=5`, start); else playLaugh();
+  if (v) playVoice(`demons/voice/d${D.sel}/${v.file}?v=6`, start); else playLaugh();
   if (navigator.vibrate) navigator.vibrate([40, 30, 40, 30, 60]);
 }
 function placeDemon(tex) {
   const ar = tex.image.width / tex.image.height;
-  let h = S.H * 0.46, w = h * ar;
+  let h = S.H * SURF_CFG[surfOf(D.sel)].size, w = h * ar;
   if (w > S.W * 0.95) { w = S.W * 0.95; h = w / ar; }
   demonMesh.userData.size = [w, h];
 }
 const rnd = (a, b) => a + Math.random() * (b - a);
 function updateDemon(tt, dt) {
   updateDevDir();
-  if (!demonMesh.visible) { capMesh.visible = false; return; }
+  if (!demonMesh.visible) { capMesh.visible = false; shadowMesh.visible = false; return; }
   const [w, h] = demonMesh.userData.size || [200, 200];
   const u = demonMat.uniforms;
   const ndc = demonScreenNDC();
   let x = (ndc.x + 1) / 2 * S.W, y = (ndc.y + 1) / 2 * S.H;
-  D.vis = ndc.on && x > -w && x < S.W + w && y > -h && y < S.H + h;
+  const cfg = SURF_CFG[D.surf || 'floor'];
+  // entrance: it first shows up crawling in from the screen edge on its surface's side (top for ceiling/wall, bottom for
+  // floor), pauses, then creeps to its world anchor (which may be off-screen: follow it by tilting up/down).
+  const et = tt - (D.enterT ?? -99);
+  if (et < 4.2) {
+    const ex = Math.max(w * 0.30, Math.min(S.W - w * 0.30 - 70, (D.side || -1) < 0 ? S.W * 0.30 : S.W * 0.62));
+    const ey = D.surf === 'floor' ? Math.max(170, h * 0.42) : S.H - h * 0.36;
+    const edgeY = D.surf === 'floor' ? -h * 0.6 : S.H + h * 0.6;
+    const k1 = Math.min(1, et / 1.1), e1 = 1 - Math.pow(1 - k1, 3);                       // crawl in from the edge
+    const k2 = Math.max(0, Math.min(1, (et - 2.0) / 2.2)), e2 = k2 * k2 * (3 - 2 * k2);    // hold, then creep to the anchor
+    const ix = ex, iy = edgeY + (ey - edgeY) * e1;
+    const cx = Math.max(-w, Math.min(S.W + w, x)), cy = Math.max(-h * 1.2, Math.min(S.H + h * 1.2, y));
+    x = ix + (cx - ix) * e2; y = iy + (cy - iy) * e2;
+    D.vis = true;
+  } else D.vis = ndc.on && x > -w && x < S.W + w && y > -h && y < S.H + h;
   // menacing idle: slow heaving breath, head tilt, creeping lean, limb flex, eye flicker
   const breath = Math.pow(0.5 + 0.5 * Math.sin(tt * 0.75), 1.6) * 2 - 1;
   let tilt = 0.09 * Math.sin(tt * 0.31) + 0.04 * Math.sin(tt * 0.83 + 1.3);
@@ -851,16 +897,23 @@ function updateDemon(tt, dt) {
     if (Math.random() < 0.08 * fall) glitch = 1;
   }
   demonMesh.visible = true;
-  demonMesh.position.set(x + ox, y + oy, 0); demonMesh.scale.set(w * sx, h * sy, 1); demonMesh.rotation.z = rot;
+  // cling to the surface: upside-down on the ceiling, sideways on the wall, crouched on the floor
+  const srot = cfg.rot * (D.surf === 'wall' ? (D.side || -1) : 1);
+  demonMesh.position.set(x + ox, y + oy, 0); demonMesh.scale.set(w * sx, h * sy * cfg.sq, 1); demonMesh.rotation.z = rot + srot;
+  u.uPersp.value = cfg.persp;
+  if (D.surf === 'floor') {
+    shadowMesh.visible = true; shadowMesh.position.set(x + ox * 0.5, y - h * cfg.sq * 0.47, 0); shadowMesh.scale.set(w * 0.85, h * 0.16, 1);
+  } else shadowMesh.visible = false;
   u.uTime.value = tt; u.uBreath.value = breath; u.uTilt.value = tilt; u.uFlex.value = flex; u.uStep.value = stepv; u.uJaw.value = jaw;
   u.uGlitch.value = glitch; u.uEye.value = eye; u.uFlick.value = flick;
-  u.uOpacity.value = D.vis ? Math.min(MAXV, D.value) / 100 * OPACITY_SCALE : 0; S.demonOpacity = u.uOpacity.value;   // slider shows 25 % max -> demon renders at 12.5 %
+  u.uOpacity.value = D.vis ? Math.min(MAXV, D.value) / 100 * OPACITY_SCALE : 0; S.demonOpacity = u.uOpacity.value;
+  shadowMesh.material.opacity = Math.min(0.32, u.uOpacity.value * 2.6);   // slider shows 25 % max -> demon renders at 12.5 %
   S.demonPos = [Math.round(x), Math.round(y)];
   // caption: shown while the line is spoken, left of the slider/icon column
   const ct = tt - D.capT;
   if (ct >= 0 && ct < D.capDur && D.capText) {
     const px = (S.W - 130) / 2 + 4;
-    const py = Math.max(200, Math.min(S.H - 140, (D.vis ? y : S.H * 0.5) - h * 0.55));
+    const py = Math.max(260, S.H * 0.40);   // fixed: upper-middle, clear of the flash button and bottom controls
     capMesh.position.set(px, py, 0); capMesh.visible = true;
     const fade = Math.min(1, ct / 0.2) * (1 - Math.max(0, (ct - (D.capDur - 0.5)) / 0.5));
     capMesh.material.opacity = fade * (Math.random() < 0.06 ? 0.45 : 1);
@@ -901,7 +954,7 @@ async function selectDemon(i) {
   unlockAudio();
   const btns = document.querySelectorAll('#demonBar button');
   if (D.sel === i) {                               // tap again: remove
-    D.sel = 0; demonMesh.visible = false; capMesh.visible = false; D.anchor = null;
+    D.sel = 0; demonMesh.visible = false; capMesh.visible = false; shadowMesh.visible = false; D.anchor = null;
     btns.forEach(b => b.classList.remove('sel')); $('#demonSlider').classList.add('hidden'); return;
   }
   D.sel = i; btns.forEach(b => b.classList.toggle('sel', +b.dataset.i === i));
@@ -915,7 +968,7 @@ async function selectDemon(i) {
   const bar = $('#demonBar');
   for (let i = 1; i <= 10; i++) {
     const b = document.createElement('button'); b.dataset.i = i; b.setAttribute('aria-label', 'Demon ' + i);
-    b.innerHTML = `<img src="demons/t${i}.png?v=5" alt="" draggable="false">`;
+    b.innerHTML = `<img src="demons/t${i}.png?v=6" alt="" draggable="false">`;
     b.addEventListener('click', e => { e.preventDefault(); selectDemon(i); });
     bar.appendChild(b);
   }
